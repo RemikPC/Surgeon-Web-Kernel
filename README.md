@@ -4,3 +4,7 @@ it’s something like a sandbox for distributions, but on the web. to understand
 18:40(Moscow) 10.10.2026
 bootloader 1.0 created
 for SWB(Surgeon Web Kernel) pre-alpha 0.0.1
+
+20:07(Moscow) 10.10.2026
+bios and post 1.0 created
+for SWB(Surgeon Web Kernel) pre-alpha 0.0.2
