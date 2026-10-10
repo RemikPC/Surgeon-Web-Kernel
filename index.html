@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Surgeon Kernel PA 0.1</title>
 
-    <!-- Стили слоями: бутлоадер -> ядро -> GUI. Каждый слой перекрывает предыдущий. -->
+    <!-- Слои стилей: BIOS -> бутлоадер -> ядро -> GUI. -->
+    <link rel="stylesheet" href="bios/post/post.css">
+    <link rel="stylesheet" href="bios/click-bios/click-bios.css">
     <link rel="stylesheet" href="boot/bootloader/bootloader.css">
     <link rel="stylesheet" href="core/kernel.css">
     <link rel="stylesheet" href="core/gui.css">
@@ -13,6 +15,8 @@
     <!-- Модули. defer держит порядок исполнения. -->
     <script src="system/config.js" defer></script>
     <script src="system/keyboard.js" defer></script>
+    <script src="bios/post/post.js" defer></script>
+    <script src="bios/click-bios/click-bios.js" defer></script>
     <script src="boot/bootloader/bootloader.js" defer></script>
     <script src="core/os_core.js" defer></script>
     <script src="core/os_recovery.js" defer></script>
@@ -42,7 +46,7 @@
 </head>
 <body>
 
-    <!-- Виртуальный монитор: один полноэкранный контейнер, внутри три слоя. -->
+    <!-- Монитор: полноэкранный контейнер, внутри три слоя. -->
     <div id="surgeon-monitor">
 
         <!-- Слой 1 — GRUB, сюда бутлоадер рисует меню. -->
@@ -56,27 +60,54 @@
 
     </div>
 
-    <!-- Оркестратор: запускаем бутлоадер и забираем его параметры. -->
+    <!-- Оркестратор: POST -> лого -> (<Del> x5: Click BIOS) -> бутлоадер -> ядро. -->
     <script>
         (function () {
             'use strict';
 
-            /* Стартуем, когда DOM готов. */
-            function startSurgeonKernel() {
-                if (window.SurgeonBoot && typeof window.SurgeonBoot.init === 'function') {
-                    window.SurgeonBoot.init();
+            /* Шаг 1: прошивка. Дальше BIOS и бутлоадер вызовут себя сами. */
+            function startBios() {
+                if (window.SurgeonPost && typeof window.SurgeonPost.init === 'function') {
+                    window.SurgeonPost.init();
                 } else {
-                    console.error("Критическая ошибка: бутлоадер Surgeon Kernel не обнаружен!");
+                    console.error('Критическая ошибка: модуль POST не обнаружен! Грузимся без BIOS.');
+                    window.SurgeonDiskReady = true;   // сканировать диск больше некому
+                    startBootloader();
                 }
             }
 
-            /* Параметры, которые бутлоадер отдаёт после выбора. */
-            document.addEventListener('boot_complete', (e) => {
+            /* Предохранитель: BIOS молчит — считаем диск готовым сами. */
+            var DISK_READY_TIMEOUT = 1500;
+            var bootStarted = false;
+
+            /* Шаг 2: меню GRUB. BIOS даёт зелёный свет флагом SurgeonDiskReady. */
+            function startBootloader() {
+                if (bootStarted) { return; }
+
+                if (window.SurgeonDiskReady !== true) {
+                    console.warn('GRUB: диск не готов (SurgeonDiskReady !== true), ждём сигнал BIOS.');
+                    document.addEventListener('surgeon_disk_ready', startBootloader, false);
+                    window.setTimeout(startBootloader, DISK_READY_TIMEOUT);
+                    return;
+                }
+
+                bootStarted = true;
+
+                if (window.SurgeonBoot && typeof window.SurgeonBoot.init === 'function') {
+                    window.SurgeonBoot.init();
+                } else {
+                    console.error('Критическая ошибка: бутлоадер Surgeon Kernel не обнаружен!');
+                }
+            }
+
+            /* Шаг 3: параметры, которые бутлоадер отдаёт после выбора. */
+            document.addEventListener('boot_complete', function (e) {
                 console.log('Ядро получило параметры загрузки:', e.detail);
                 // На этапе 2 отсюда запустится core/os_core.js
             });
 
-            document.addEventListener('DOMContentLoaded', startSurgeonKernel);
+            document.addEventListener('bios_complete', startBootloader);
+            document.addEventListener('DOMContentLoaded', startBios);
         })();
     </script>
 

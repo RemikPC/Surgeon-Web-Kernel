@@ -1,26 +1,18 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.1 (Pre-Alpha)
- * Этап 1: загрузчик GRUB               Файл: boot/bootloader/bootloader.js
+ * Surgeon Kernel PA 0.1 (Pre-Alpha)    Файл: boot/bootloader/bootloader.js
  * ----------------------------------------------------------------------------
- * Ретро-меню в стиле GRUB: синий DOS-экран, стрелки ↑/↓, Enter,
- * автозапуск через 5 секунд.
+ * Ретро-меню в стиле GRUB: синий DOS-экран, стрелки ↑/↓, Enter и автозапуск
+ * через 5 секунд.
  *
- * Ядро — чистый лист: чужих названий ОС в меню нет. Базовые пункты —
- * Normal / Safe / Recovery Core Mode, плюс подпункт Safe Mode под нормальным
- * режимом. Установленные дистрибутивы лежат в localStorage
- * ('surgeon_installed_distros') и дописываются подпунктами в Normal Core Mode.
- * Пусто — подпунктов нет.
+ * Меню — чистый лист: верхний пункт один, Normal Core Mode, под ним Safe Mode.
+ * Выключенные Safe и Recovery остались в KERNEL_LABELS, вернуть их можно одной
+ * строкой в MENU_BLUEPRINT. Установленные дистрибутивы лежат в localStorage
+ * ('surgeon_installed_distros') и дописываются подпунктами к Normal Core Mode.
  *
- * API:
- *   window.SurgeonBoot.init()    — отрисовать меню и запустить отсчёт
- *   window.SurgeonBoot.destroy() — убрать меню, таймеры и слушатели
+ * Ядру уходит событие 'boot_complete' с window.SurgeonBootConfig:
+ *   { coreMode: 'normal' | 'safe' | 'recovery', activeDistro, distroSafeMode }
  *
- * Что уходит ядру (событие 'boot_complete'):
- *   window.SurgeonBootConfig = {
- *       coreMode:       'normal' | 'safe' | 'recovery',
- *       activeDistro:   null | 'имя дистрибутива',
- *       distroSafeMode: true | false
- *   };
+ * API: SurgeonBoot.init() / destroy()
  * ========================================================================== */
 (function (window, document) {
     'use strict';
@@ -64,16 +56,13 @@
     var SAFE_SUB_LABEL = 'Safe Mode';   // подпункт Normal Core Mode
 
     /* --- 3. Черновик меню -------------------------------------------------
-     *  kernel  — базовый пункт ядра
-     *  safe    — подпункт Safe Mode (идёт только под Normal)
-     *  distros — сюда подставляются установленные дистрибутивы
+     * kernel — базовый пункт ядра, safe — подпункт под Normal, distros — сюда
+     * подставляются установленные дистрибутивы. Recovery ждёт своего этапа.
      * --------------------------------------------------------------------- */
     var MENU_BLUEPRINT = [
-        { type: 'kernel',  coreMode: CORE_MODE.NORMAL   },
-        { type: 'safe',    coreMode: CORE_MODE.NORMAL   },
-        { type: 'distros', coreMode: CORE_MODE.NORMAL   },
-        { type: 'kernel',  coreMode: CORE_MODE.SAFE     },
-        { type: 'kernel',  coreMode: CORE_MODE.RECOVERY }
+        { type: 'kernel',  coreMode: CORE_MODE.NORMAL },
+        { type: 'safe',    coreMode: CORE_MODE.NORMAL },
+        { type: 'distros', coreMode: CORE_MODE.NORMAL }
     ];
 
     /* --- 4. Состояние модуля ---------------------------------------------- */
@@ -134,7 +123,7 @@
         return row;
     }
 
-    /* Старые движки без indexOf / isArray / trim — отсюда свои реализации. */
+    /* Старые движки без indexOf/isArray/trim — отсюда свои версии. */
     function indexOfNode(list, node) {
         for (var i = 0; i < list.length; i++) {
             if (list[i] === node) { return i; }
@@ -157,9 +146,7 @@
         return String(value).replace(/^\s+|\s+$/g, '');
     }
 
-    /* --- 6. NVRAM: список установленных дистрибутивов ---------------------
-     * Битые данные и пустое хранилище — просто []. Ошибку наверх не пускаем.
-     * --------------------------------------------------------------------- */
+    /* --- 6. NVRAM: установленные дистрибутивы (битые данные — просто []) --- */
     function readInstalledDistros() {
         var raw = null;
 
@@ -275,10 +262,8 @@
         return banner;
     }
 
-    /* --- 9. Рамка меню ----------------------------------------------------
-     * Базовые пункты — по левому краю, подпункты — с веткой └──.
-     * Здесь же наполняются state.itemEls и state.entries.
-     * --------------------------------------------------------------------- */
+    /* --- 9. Рамка меню: базовые пункты слева, подпункты с веткой └── ------ */
+    /* Здесь же наполняются state.itemEls и state.entries. */
     function buildEntryRow(entry) {
         var bodyNodes;
 
@@ -441,10 +426,7 @@
         }
     }
 
-    /* --- 13. Финализация: отдаём выбор ядру --------------------------------
-     * Наружу уходит либо чистое ядро (activeDistro = null), либо
-     * конкретный дистрибутив под управлением ядра.
-     * --------------------------------------------------------------------- */
+    /* --- 13. Финализация: отдаём выбор ядру (чистое ядро или дистрибутив) -- */
     function finalize(index) {
         if (state.booting || !state.initialized) { return; }
 

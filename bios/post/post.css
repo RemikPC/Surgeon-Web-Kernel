@@ -1,0 +1,206 @@
+/* ============================================================================
+ * Surgeon Kernel PA 0.1 (Pre-Alpha)    Файл: bios/post/post.css
+ * ----------------------------------------------------------------------------
+ * Экран POST как на живой плате: чёрный фон, моноширинный шрифт, блочный логотип
+ * справа, лента строк слева. Прямые углы, никаких переходов и анимаций; курсора
+ * нет — он появится только в Setup.
+ * ========================================================================== */
+
+/* 1. Корневой контейнер: во весь экран, поверх остальных слоёв. */
+#surgeon-post {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: #000000;
+    color: #e8e8e8;
+    font-family: 'Consolas', 'Courier New', Courier, monospace;
+    font-size: 15px;
+    line-height: 1.25;
+    padding: 16px 18px;
+    box-sizing: border-box;
+    z-index: 10000;
+    overflow: hidden;
+
+    /* До драйверов курсора нет: указатель мыши тоже прячем. */
+    cursor: none;
+}
+
+/* 2. Фаза 1: коробка экрана POST. */
+.post-screen {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* 3. Шапка: слева строки BIOS, справа блочный логотип. */
+.post-head {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #2e2e2e;
+}
+
+.post-head-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.post-head-line {
+    white-space: pre;
+    color: #d0d0d0;
+}
+
+.post-head-line.post-head-title {
+    color: #ffffff;
+    font-weight: bold;
+}
+
+.post-head-brand {
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.post-head-art {
+    margin: 0;
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1.02;
+    letter-spacing: 0;
+    white-space: pre;
+    color: #ffffff;
+}
+
+/* Подпись под логотипом: единственный красный акцент. */
+.post-head-caption {
+    margin-top: 6px;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: #c8102e;
+}
+
+/* 4. Лента строк: новые снизу, старые уползают вверх. */
+.post-log {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.post-line {
+    white-space: pre;
+    min-height: 1.25em;
+}
+
+.post-blank {
+    height: 1.25em;
+}
+
+.post-value {
+    color: #c8102e;
+}
+
+.post-ok {
+    color: #e8e8e8;
+}
+
+/* 5. Фаза 2: сплэш. */
+#surgeon-post.post-splash {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 30px 18px;
+}
+
+.post-splash-frame {
+    border: 1px solid #3a3a3a;
+    padding: 26px 34px;
+    text-align: center;
+    max-width: 94vw;
+    box-sizing: border-box;
+}
+
+.post-art {
+    margin: 0 0 20px 0;
+    font-family: inherit;
+    font-size: 17px;
+    line-height: 1.05;
+    letter-spacing: 0;
+    white-space: pre;
+    color: #ffffff;
+}
+
+.post-logo {
+    font-family: inherit;
+    font-size: 30px;
+    font-weight: bold;
+    letter-spacing: 6px;
+    color: #ffffff;
+}
+
+.post-logo-brand {
+    color: #ffffff;
+}
+
+.post-logo-product {
+    color: #c8102e;
+}
+
+.post-splash-sub {
+    margin-top: 12px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    color: #9a9a9a;
+    white-space: pre;
+}
+
+/* 6. Подсказка про клавиши. */
+.post-splash-hint {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    margin-top: 34px;
+    white-space: pre;
+}
+
+.post-hint {
+    font-size: 14px;
+    letter-spacing: 1px;
+    color: #cfcfcf;
+}
+
+/* Прогресс запроса Setup: виден после нажатий <Del>. */
+.post-hint-box {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.post-hint-progress {
+    margin-top: 6px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    color: #c8102e;
+}
+
+.post-hint-progress:empty {
+    display: none;
+}
+
+/* 7. Узкий экран: надпись мельче, чтобы рамка не разъезжалась. */
+@media (max-width: 900px) {
+    .post-art {
+        font-size: 12px;
+    }
+
+    .post-logo {
+        font-size: 22px;
+        letter-spacing: 4px;
+    }
+}
