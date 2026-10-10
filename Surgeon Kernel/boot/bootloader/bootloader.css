@@ -1,0 +1,181 @@
+/* ============================================================================
+ * Surgeon Kernel PA 0.1 (Pre-Alpha)
+ * Этап 1: загрузчик GRUB               Файл: boot/bootloader/bootloader.css
+ * ----------------------------------------------------------------------------
+ * Синий DOS-экран, моноширинный шрифт, псевдографическая рамка,
+ * инверсия активной строки и лёгкая CRT-развёртка.
+ * ========================================================================== */
+
+/* 1. Корневой контейнер: на весь экран, поверх остального интерфейса. */
+#surgeon-grub,
+#surgeon-grub * {
+    box-sizing: border-box;
+}
+
+#surgeon-grub {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 9999;
+
+    margin: 0;
+    padding: 3vh 2vw;
+    overflow: hidden;
+
+    display: flex;
+    flex-direction: column;
+
+    background-color: #0000aa;                /* классический синий DOS-экран */
+    color: #ffffff;
+
+    font-family: "Courier New", Courier, "Lucida Console", "Consolas", monospace;
+    font-size: clamp(11px, 0.35vw + 9px, 18px);
+    line-height: 1.25;
+    font-weight: 400;
+    letter-spacing: normal;
+    text-rendering: optimizeSpeed;
+
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+    outline: none;
+}
+
+/* CRT-развёртка: поверх фона, под контентом. */
+#surgeon-grub::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0)    0px,
+        rgba(0, 0, 0, 0)    2px,
+        rgba(0, 0, 0, 0.16) 2px,
+        rgba(0, 0, 0, 0.16) 3px
+    );
+}
+
+/* 2. Экран: центрированная область с баннером и рамкой. */
+.grub-screen {
+    position: relative;
+    z-index: 2;
+
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 3. Баннер сверху — двойная рамка с названием системы. */
+.grub-banner {
+    width: 68ch;
+    margin: 0 0 1.5em 0;
+    white-space: pre;
+    color: #ffff55;
+}
+
+.grub-banner-line {
+    display: block;
+    white-space: pre;
+}
+
+/* 4. Рамка меню — одинарная рамка шириной 68ch. */
+.grub-frame {
+    width: 68ch;
+    white-space: pre;
+    color: #55ffff;
+}
+
+.grub-frame-line {
+    display: block;
+    width: 68ch;
+    white-space: pre;
+    color: #55ffff;
+}
+
+/* Строка рамки: │ тело │ (1ch + 66ch + 1ch = 68ch) */
+.grub-row {
+    display: flex;
+    align-items: stretch;
+    width: 68ch;
+    white-space: pre;
+}
+
+.grub-edge {
+    flex: 0 0 1ch;
+    width: 1ch;
+    color: #55ffff;
+}
+
+.grub-body {
+    flex: 0 0 66ch;
+    width: 66ch;
+    overflow: hidden;
+    white-space: pre;
+}
+
+/* 5. Цвета строк и инверсия активного пункта. */
+.grub-row--title {
+    color: #ffff55;
+    font-weight: 700;
+}
+
+.grub-row--header {
+    color: #55ffff;
+    font-weight: 700;
+}
+
+.grub-row--item {
+    color: #ffff55;
+}
+
+.grub-branch {
+    color: #aaaaff;
+}
+
+/* Активный пункт: синий по белому, как в GRUB. */
+.grub-row--item.is-active {
+    background-color: #ffffff;
+    color: #0000aa;
+}
+
+.grub-row--item.is-active .grub-edge {
+    color: #0000aa;
+}
+
+.grub-row--item.is-active .grub-branch,
+.grub-row--item.is-active .grub-label {
+    color: #0000aa;
+}
+
+/* 6. Подвал: подсказка и счётчик секунд. */
+.grub-footer {
+    position: relative;
+    z-index: 2;
+
+    flex: 0 0 auto;
+    width: 100%;
+    text-align: center;
+    white-space: pre-wrap;
+}
+
+.grub-hint {
+    color: #aaaaaa;
+}
+
+.grub-timer {
+    margin-top: 0.45em;
+    color: #ffff55;
+    font-weight: 700;
+}
