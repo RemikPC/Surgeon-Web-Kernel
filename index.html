@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Surgeon Kernel PA 0.1</title>
+
+    <!-- Стили слоями: бутлоадер -> ядро -> GUI. Каждый слой перекрывает предыдущий. -->
+    <link rel="stylesheet" href="boot/bootloader/bootloader.css">
+    <link rel="stylesheet" href="core/kernel.css">
+    <link rel="stylesheet" href="core/gui.css">
+
+    <!-- Модули. defer держит порядок исполнения. -->
+    <script src="system/config.js" defer></script>
+    <script src="system/keyboard.js" defer></script>
+    <script src="boot/bootloader/bootloader.js" defer></script>
+    <script src="core/os_core.js" defer></script>
+    <script src="core/os_recovery.js" defer></script>
+    <script src="drivers/driver_manager.js" defer></script>
+    <script src="net/net_stack.js" defer></script>
+    <script src="net/tpabka_pkg.js" defer></script>
+
+    <!-- Каркас монитора: на весь экран. -->
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000000;
+            overflow: hidden;
+        }
+
+        #surgeon-monitor {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Виртуальный монитор: один полноэкранный контейнер, внутри три слоя. -->
+    <div id="surgeon-monitor">
+
+        <!-- Слой 1 — GRUB, сюда бутлоадер рисует меню. -->
+        <div id="surgeon-grub"></div>
+
+        <!-- Слой 2 — текстовая консоль ядра: логи и командная строка. -->
+        <div id="surgeon-terminal" style="display: none;"></div>
+
+        <!-- Слой 3 — графическая оболочка. -->
+        <div id="surgeon-desktop" style="display: none;"></div>
+
+    </div>
+
+    <!-- Оркестратор: запускаем бутлоадер и забираем его параметры. -->
+    <script>
+        (function () {
+            'use strict';
+
+            /* Стартуем, когда DOM готов. */
+            function startSurgeonKernel() {
+                if (window.SurgeonBoot && typeof window.SurgeonBoot.init === 'function') {
+                    window.SurgeonBoot.init();
+                } else {
+                    console.error("Критическая ошибка: бутлоадер Surgeon Kernel не обнаружен!");
+                }
+            }
+
+            /* Параметры, которые бутлоадер отдаёт после выбора. */
+            document.addEventListener('boot_complete', (e) => {
+                console.log('Ядро получило параметры загрузки:', e.detail);
+                // На этапе 2 отсюда запустится core/os_core.js
+            });
+
+            document.addEventListener('DOMContentLoaded', startSurgeonKernel);
+        })();
+    </script>
+
+</body>
+</html>
