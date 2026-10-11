@@ -1,22 +1,24 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.1 (Pre-Alpha)
- * bios/post/post.js
+ * Surgeon Kernel PA 0.3    Файл: bios/post/post.js
  * ----------------------------------------------------------------------------
- * Текстовый POST в духе AMIBIOS: шапка с блочным логотипом, лента инициализации,
- * счётчик памяти, затем сплэш с подсказкой про <Del> и <F11>.
+ * Текстовый POST в духе AMIBIOS: шапка с логотипом, лента инициализации,
+ * счётчик памяти, сплэш с подсказками <Del> и <F11>.
  *
- * Наружу отдаёт три вещи:
- *   TPABKA_REGISTRY  — реестр железа: POST его читает, шаги инициализации пишут;
+ * Наружу отдаёт:
+ *   TPABKA_REGISTRY  — реестр железа: пишет POST, читают Setup и ядро;
+ *   SurgeonPerf      — часы и ускорение: разгон быстрее гоняет POST и GRUB;
  *   SurgeonDiskReady — накопитель просканирован, бутлоадеру можно грузиться;
  *   TPABKA_PROCESSES — таблица процессов, чистится на входе в BIOS.
  *
- * Setup не открывается с одного нажатия: <Del> надо долбить DEL_PRESSES раз,
- * и только на фазе логотипа — пока идёт лента, клавиши молчат.
+ * Setup не открывается с одного нажатия: <Del> надо долбить DEL_PRESSES раз и
+ * только на фазе логотипа — пока идёт лента, клавиши молчат.
  *
- * Анимаций и курсора нет: строки выводятся мгновенно, указатель появится
- * только в Setup.
+ * Перед передачей эстафеты POST проверяет машину (см. finishPOST):
+ *   грузить нечего        -> чёрный экран "No Bootable Device";
+ *   обязательные пункты   -> ошибка на экране и возврат в Setup через 2 сек;
+ *   разгон за лимитами    -> артефакты, ошибка и возврат в Setup через 2 сек.
  *
- * API: SurgeonPost.init() / runPOST() / destroy()
+ * API: SurgeonPost.init() / runPOST() / destroy() / platform() / perf()
  *
  * Куда уходит управление:
  *   <Del> x5        -> window.SurgeonClickBios.init()   (только на фазе лого)
@@ -26,9 +28,11 @@
     'use strict';
 
     /* --- 1. Тайминги, клавиши, лимиты -------------------------------------- */
+    var PA_VERSION    = 'PA 0.3';
     var CONTAINER_ID  = 'surgeon-post';
+    var ERROR_ID      = 'surgeon-post-error';
     var LOGO_WORD     = 'SURGEON';
-    var LINE_DELAY    = 110;      // мс между строками POST
+    var LINE_DELAY    = 110;      // мс между строками POST (IDE растягивает на треть)
     var RAM_MAX_MB    = 4096;
     var RAM_STEP_MB   = 256;
     var RAM_TICK_MS   = 30;
@@ -36,6 +40,7 @@
     var SPLASH_DELAY  = 1500;     // пауза после последней строки POST
     var SETUP_TIMEOUT = 4000;     // сколько ждём <Del>, потом грузимся дальше
     var DEL_PRESSES   = 5;        // столько нажатий <Del> открывают Setup
+    var SETUP_RETURN_MS = 2000;   // ошибка проверки: держим экран и уходим в Setup
 
     var KEY_DELETE = 46;
     var KEY_F11    = 122;
@@ -122,6 +127,168 @@
         }
     }
 
+    /* --- 2c. Флаги NVRAM: те же ключи, что пишет Click BIOS ---------------- */
+    /* SATA [IDE] роняет шину до 70%, Legacy USB гасит клавиатуру, Secure Boot
+     * оставляет только подписанные сборки, разгон задаёт частоты. */
+    var SATA_KEY   = 'surgeon_bios_storage';
+    var USB_KEY    = 'surgeon_bios_usb';
+    var SECURE_KEY = 'surgeon_bios_security';
+    var OVERHEAT_KEY = 'surgeon_bios_overheat';   // журнал перегрева от Setup
+    var OC_KEY       = 'surgeon_bios_oc';         // { voltage, multiplier }
+    var MEMORY_KEY   = 'surgeon_bios_memory';     // XMP или ручные частоты DRAM
+    var IDE_THROTTLE = 0.7;       // io_throttle из Click BIOS
+
+    /* Снимок берётся один раз за прогон POST: дальше только по памяти. */
+    var platform = null;
+
+    function readPlatform() {
+        var storage  = readJSON(SATA_KEY, null);
+        var usb      = readJSON(USB_KEY, null);
+        var security = readJSON(SECURE_KEY, null);
+        var ide      = !!(storage && storage.sata_mode === 'IDE');
+
+        return {
+            sataMode:   ide ? 'IDE' : 'AHCI',
+            ioThrottle: ide ? IDE_THROTTLE : 1,
+            legacyUsb:  !(usb && usb.legacy_usb === false),
+            secureBoot: !!(security && security.secure_boot === true)
+        };
+    }
+
+    function ensurePlatform() {
+        if (!platform) { platform = readPlatform(); }
+        return platform;
+    }
+
+    /* --- 2d. Разгон: часы и ускорение машины ------------------------------ */
+    /* Скорость берётся из NVRAM: множитель и напряжение CPU плюс частота
+     * памяти. IDE тормозит шину, перегрев режет частоту до 70% — как на железе. */
+    var BASE_CLOCK   = 3600;      // МГц на штатных 36x / 1.032V / DDR4-3200
+    var BASE_RATIO   = 36;
+    var BASE_VOLTAGE = 1.032;
+    var BASE_MEM_MHZ = 3200;
+    var SPEED_LIMIT  = 1.8;       // выше не гонится ни один профиль
+    var OVERHEAT_THROTTLE = 0.7;  // перегрев: минус 30% к частоте
+
+    function readOCProfile() {
+        var oc = readJSON(OC_KEY, null);
+
+        return {
+            ratio:   (oc && typeof oc.multiplier === 'number') ? oc.multiplier : BASE_RATIO,
+            voltage: (oc && typeof oc.voltage === 'number') ? oc.voltage : BASE_VOLTAGE
+        };
+    }
+
+    function readMemoryProfile() {
+        var mem = readJSON(MEMORY_KEY, null);
+
+        return {
+            xmp: (mem && typeof mem.xmp === 'string') ? mem.xmp : 'Disabled',
+            mhz: (mem && typeof mem.freq_mhz === 'number') ? mem.freq_mhz : BASE_MEM_MHZ,
+            cl:  (mem && typeof mem.cl === 'number') ? mem.cl : 16
+        };
+    }
+
+    /* Перегрев спрашиваем у Click BIOS: лимиты живут в одном месте. */
+    function overheatNow() {
+        var api = window.SurgeonOverheat;
+        var live;
+
+        if (api && typeof api.state === 'function') {
+            live = api.state();
+            return { active: live.active === true, text: live.text || '' };
+        }
+        return { active: false, text: '' };
+    }
+
+    function perfText(snap) {
+        var parts = ['CPU ' + snap.cpuMHz + 'MHz', 'DDR4-' + snap.memoryMHz +
+            ' @ ' + snap.memoryClock + 'MHz'];
+        var boost = Math.round((snap.speed - 1) * 100);
+
+        if (snap.memoryXmp !== 'Disabled') { parts.push('XMP ' + snap.memoryXmp); }
+        parts.push(boost > 0 ? 'boost +' + boost + '%' : 'штатный режим');
+
+        if (snap.throttled) { parts.push('CPU THROTTLED 70%'); }
+        return parts.join('  ·  ');
+    }
+
+    function perfSnapshot() {
+        var oc     = readOCProfile();
+        var mem    = readMemoryProfile();
+        var broken = overheatNow();
+        var cpuMHz = Math.round(BASE_CLOCK * (oc.ratio / BASE_RATIO) *
+            (1 + (oc.voltage - BASE_VOLTAGE) * 0.5));
+        var speed  = (cpuMHz / BASE_CLOCK) * (1 + (mem.mhz - BASE_MEM_MHZ) / BASE_MEM_MHZ * 0.5);
+        var snap;
+
+        if (broken.active) { speed *= OVERHEAT_THROTTLE; }
+        speed = Math.min(Math.max(speed, 0.4), SPEED_LIMIT);
+
+        snap = {
+            ratio:       oc.ratio,
+            voltage:     oc.voltage,
+            memoryXmp:   mem.xmp,
+            memoryMHz:   mem.mhz,
+            memoryCL:    mem.cl,
+            cpuMHz:      cpuMHz,
+            memoryClock: Math.round(mem.mhz / 2),
+            speed:       Math.round(speed * 1000) / 1000,
+            throttled:   broken.active,
+            reason:      broken.text,
+            text:        ''
+        };
+        snap.text = perfText(snap);
+        return snap;
+    }
+
+    function perfSpeed() {
+        return perfSnapshot().speed;
+    }
+
+    /* Разгон гонит ленту POST: строка идёт во столько раз быстрее, во сколько
+     * раз железо быстрее штатного. */
+    function stepDelay() {
+        return Math.round(LINE_DELAY / ensurePlatform().ioThrottle / perfSpeed());
+    }
+
+    function ramTickMs() {
+        return Math.max(6, Math.round(RAM_TICK_MS / perfSpeed()));
+    }
+
+    /* --- 2e. Чек-лист Setup: обязательные пункты перед загрузкой ---------- */
+    /* Список живёт в Click BIOS (SurgeonSetupCheck): POST только спрашивает. */
+    function setupCheck() {
+        var api     = window.SurgeonSetupCheck;
+        var pending;
+
+        if (!api || typeof api.pending !== 'function') { return null; }
+
+        pending = api.pending();
+        if (!isArray(pending)) { pending = []; }
+
+        return {
+            pending: pending,
+            total: (typeof api.total === 'function') ? api.total() : pending.length
+        };
+    }
+
+    function setupCheckText() {
+        var check  = setupCheck();
+        var labels = [];
+        var i;
+
+        if (!check) { return '[Click BIOS не подключён]'; }
+        if (check.pending.length === 0) {
+            return 'all ' + check.total + ' required item(s) set';
+        }
+
+        for (i = 0; i < check.pending.length; i++) { labels.push(check.pending[i].label); }
+
+        return (check.total - check.pending.length) + '/' + check.total + ' done' +
+            '        PENDING: ' + labels.join('; ');
+    }
+
     /* --- 2a. Таблица процессов симулятора --------------------------------- */
     /* Всё из прошлого запуска обязано умереть, иначе чужие интервалы живут дальше. */
     function resetProcessTable() {
@@ -156,7 +323,7 @@
         return {
             label:       DISK_LABEL,
             interface:   'VDFS-BRIDGE',
-            fs_revision: 'PA 0.1',
+            fs_revision: PA_VERSION,
             sector_size: 512,
             size_mb:     DISK_SIZE_MB,
             created:     new Date().toISOString(),
@@ -274,7 +441,7 @@
     var HEAD_LINES = [
         'AMIBIOS (C) 2026 American Megatrends, Inc.',
         'SURGEON BOARD ACPI BIOS Revision 0101',
-        'SURGEON CLICK BIOS 5  ·  PA 0.1  ·  10/10/2026'
+        'SURGEON CLICK BIOS 5  \u00b7  ' + PA_VERSION + '  \u00b7  10/10/2026'
     ];
 
     /* --- 4a. Лента POST собирается на живых данных реестра ---------------- */
@@ -293,13 +460,25 @@
                 return 'Status : ' + hw.cpu.status + '        Microcode : ' + hw.cpu.microcode +
                     '        Overclock : ' + (hw.cpu.overclocked ? 'ON' : 'OFF');
             } },
-            { text: 'Speed : ' + CPU_SPEED_MHZ + 'MHz        Count : 1 Core / 2 Threads' },
+            { text: function () {
+                var perf  = perfSnapshot();
+                var boost = Math.round((perf.speed - 1) * 100);
+
+                return 'Speed : ' + perf.cpuMHz + 'MHz (base ' + CPU_SPEED_MHZ + 'MHz, ' +
+                    (boost > 0 ? 'OC boost +' + boost + '%' : 'stock') +
+                    ')        Count : 1 Core / 2 Threads';
+            } },
             { text: function () {
                 return 'Cache : 512KB L2 + 8MB L3        Kernel Ring : ' + reg.system_flags.kernel_ring;
             } },
             { text: 'Chipset : ' + BOARD_NAME + ' Rev. 21' },
             { text: 'BIOS Date : 10/10/2026        Rev. 0101 (UEFI 2.7)' },
-            { text: 'Total Memory : ' + RAM_TOTAL_MB + 'MB DDR4-3200 @ 1600MHz' },
+            { text: function () {
+                var perf = perfSnapshot();
+
+                return 'Total Memory : ' + RAM_TOTAL_MB + 'MB DDR4-' + perf.memoryMHz + ' @ ' +
+                    perf.memoryClock + 'MHz (' + perf.memoryXmp + ')';
+            } },
             { text: function () {
                 return 'VGA : ' + hw.video.driver + '        Mode : ' + hw.video.mode;
             } },
@@ -315,6 +494,24 @@
             { text: 'Auto-Detecting SATA Port 0 ... ' + DISK_LABEL + ' 512GB' },
             { text: 'Auto-Detecting SATA Port 1 ... SURGEON_OPTICAL_DVD-RW' },
             { text: 'Detecting ATA/ATAPI Devices .. 3 Devices Found' },
+            { text: function () {
+                var p = ensurePlatform();
+                return 'SATA Mode : ' + p.sataMode + (p.sataMode === 'IDE'
+                    ? '        (compatibility, I/O throttled to 70%)'
+                    : '            (native, full speed)');
+            } },
+            { text: function () {
+                var p = ensurePlatform();
+                return 'Legacy USB : ' + (p.legacyUsb ? 'Enabled' : 'Disabled') +
+                    '       Secure Boot : ' +
+                    (p.secureBoot ? 'Enabled (signed builds only)' : 'Disabled');
+            } },
+            { text: function () {
+                return 'Overclocking : ' + perfSnapshot().text;
+            } },
+            { text: function () {
+                return 'Setup Checklist : ' + setupCheckText();
+            } },
             { text: 'PCI Express x16 Link Training .. x16 (Gen3)' },
             { run: stepVideo },
             { memtest: true },
@@ -345,6 +542,8 @@
     var delProgressEl = null; // строка с прогрессом на сплэше
     var splashVisible = false; // лого на экране: только тогда клавиши видны
     var staleProcessesKilled = 0;   // сколько процессов прибито на входе в BIOS
+    var thermalNoticeEl = null;     // строка аварийного режима на сплэше
+    var thermalActive   = false;    // артефакты включил именно POST
 
     /* --- 6. Мелкие хелперы ------------------------------------------------- */
     function sleep(ms) {
@@ -404,7 +603,7 @@
         }
 
         brand.appendChild(el('pre', 'post-head-art', LOGO_ART));
-        brand.appendChild(el('div', 'post-head-caption', 'CLICK BIOS 5  ·  PA 0.1'));
+        brand.appendChild(el('div', 'post-head-caption', 'CLICK BIOS 5  \u00b7  ' + PA_VERSION));
 
         head.appendChild(texts);
         head.appendChild(brand);
@@ -462,7 +661,7 @@
                     row.appendChild(el('span', 'post-ok', '  OK'));
                     resolve();
                 }
-            }, RAM_TICK_MS);
+            }, ramTickMs());
         });
     }
 
@@ -474,11 +673,11 @@
         hw.usb_bus.devices = USB_DEVICES.slice();
 
         printLine('Initializing USB Controllers .. ' + hw.usb_bus.driver + ' Done');
-        await sleep(LINE_DELAY);
+        await sleep(stepDelay());
         if (isStale(token)) { return; }
 
         printLine('USB Device(s) : ' + hw.usb_bus.devices.length + ' -> ' + hw.usb_bus.devices.join(', '));
-        await sleep(LINE_DELAY);
+        await sleep(stepDelay());
         if (isStale(token)) { return; }
 
         hw.mouse.driver = '[PS2_LEGACY_MOUSE]';
@@ -504,20 +703,20 @@
 
         printLine('Scanning virtual disk .. ' + disk.label + ' (' + disk.size_mb + ' MB, ' +
             disk.partitions.length + ' partitions)');
-        await sleep(LINE_DELAY);
+        await sleep(stepDelay());
         if (isStale(token)) { return; }
 
         for (i = 0; i < disk.partitions.length; i++) {
             part = disk.partitions[i];
             printLine('  ' + part.fs + ' : ' + part.mount_points.join(' ') + ' .. ' + part.status +
                 ' (' + part.size_mb + ' MB' + (part.protected ? ', protected' : ', writable') + ')');
-            await sleep(LINE_DELAY);
+            await sleep(stepDelay());
             if (isStale(token)) { return; }
         }
 
         printLine('Disk layout : ' + (scan.created ? 'new partition table written' :
             'existing layout mounted'));
-        await sleep(LINE_DELAY);
+        await sleep(stepDelay());
         if (isStale(token)) { return; }
 
         printLine('Mount Table : ' + partitionTableText(disk));
@@ -556,7 +755,7 @@
             }
 
             if (isStale(token)) { return; }
-            await sleep(LINE_DELAY);
+            await sleep(stepDelay());
         }
 
         if (isStale(token)) { return; }
@@ -565,6 +764,126 @@
         if (isStale(token)) { return; }
 
         showSplash();
+    }
+
+    /* --- 9a. Перегрев с прошлого запуска ---------------------------------- */
+    /* Журнал пишет Click BIOS. armed = настройки сохранены (Save & Exit):
+     * без сохранения машина грузится чисто, артефактов нет. */
+    function thermalRecord() {
+        if (window.SurgeonOverheat && typeof window.SurgeonOverheat.record === 'function') {
+            return window.SurgeonOverheat.record();
+        }
+        return readJSON(OVERHEAT_KEY, null);
+    }
+
+    function thermalStatus() {
+        var api = window.SurgeonOverheat;
+
+        if (api && typeof api.state === 'function') { return api.state(); }
+        return { active: false, text: '' };
+    }
+
+    function thermalDetails(status) {
+        var parts = (status.text || '').split('  \u00b7  ');
+        var out   = [];
+        var i;
+
+        for (i = 0; i < parts.length; i++) {
+            if (parts[i] !== '') { out.push('  ' + parts[i]); }
+        }
+        return out.length ? out : ['  OC profile rejected'];
+    }
+
+    function applyThermalOverride(root) {
+        var record = thermalRecord();
+        var status = thermalStatus();
+        var text;
+
+        if (!record || record.armed !== true || status.active !== true) { return false; }
+
+        if (window.SurgeonOverheat && typeof window.SurgeonOverheat.start === 'function') {
+            window.SurgeonOverheat.start(root || container);
+            thermalActive = true;
+        }
+
+        text = status.text || record.reason || 'OC profile rejected';
+
+        if (thermalNoticeEl) {
+            thermalNoticeEl.textContent = 'EMERGENCY THERMAL OVERRIDE: ' + text +
+                '  \u00b7  искажения экрана включены  \u00b7  сброс: <Del> x' + DEL_PRESSES +
+                ' -> Setup -> Ctrl+Alt+R';
+        }
+
+        console.warn('[POST] Thermal override from NVRAM (armed): ' + text);
+        return true;
+    }
+
+    /* --- 9b. Экран ошибки: машина не поехала ------------------------------ */
+    /* Показываем причину и через SETUP_RETURN_MS уходим в Click BIOS:
+     * починить настройки можно только там. */
+    var errorLayer = null;
+    var errorTimer = null;
+
+    function removeErrorScreen() {
+        if (errorTimer !== null) {
+            window.clearTimeout(errorTimer);
+            errorTimer = null;
+        }
+        if (errorLayer && errorLayer.parentNode) {
+            errorLayer.parentNode.removeChild(errorLayer);
+        }
+        errorLayer = null;
+    }
+
+    function showErrorScreen(title, details) {
+        var layer, box, i;
+
+        removeErrorScreen();
+
+        layer    = el('div', 'post-error-screen');
+        layer.id = ERROR_ID;
+        box      = el('div', 'post-error-box');
+
+        box.appendChild(el('div', 'post-error-title',
+            'SURGEON POST  \u00b7  ' + PA_VERSION + '  \u00b7  SYSTEM CHECK FAILED'));
+        box.appendChild(el('div', 'post-error-head', title));
+
+        for (i = 0; i < details.length; i++) {
+            box.appendChild(el('div', 'post-error-line', details[i]));
+        }
+
+        box.appendChild(el('div', 'post-error-foot', 'Returning to Click BIOS Setup in ' +
+            (SETUP_RETURN_MS / 1000) + ' s ...'));
+
+        layer.appendChild(box);
+        document.body.appendChild(layer);
+        errorLayer = layer;
+
+        console.error('[BIOS] POST check failed: ' + title + ' -> ' + details.join(' | '));
+
+        errorTimer = window.setTimeout(function () {
+            errorTimer = null;
+            teardown();
+            launchSetup();
+        }, SETUP_RETURN_MS);
+    }
+
+    /* Остановка с ошибкой: пункты чек-листа или строки термозащиты.
+     * keepArtifacts — перегрев видно и на экране ошибки. */
+    function haltToSetup(title, items, keepArtifacts) {
+        var details = [];
+        var i, item;
+
+        for (i = 0; i < items.length; i++) {
+            item = items[i];
+            details.push(typeof item === 'string' ? item :
+                '  ' + item.label + ' : ' + item.value + '  ->  ' + item.fix);
+        }
+        if (details.length === 0) { details.push('  (reason unknown)'); }
+
+        showErrorScreen(title, details);
+
+        if (keepArtifacts) { applyThermalOverride(errorLayer); }
     }
 
     /* --- 10. Фаза 2: сплэш -------------------------------------------------- */
@@ -580,8 +899,11 @@
         frame.appendChild(logo);
 
         frame.appendChild(el('div', 'post-splash-sub',
-            'PA 0.1  ·  BIOS Rev. 0101  ·  10/10/2026  ·  ' +
+            PA_VERSION + '  \u00b7  BIOS Rev. 0101  \u00b7  10/10/2026  \u00b7  ' +
             '(C) 2026 Surgeon Technologies, Inc.'));
+
+        /* Часы машины: разгон видно на логотипе, до всякой загрузки. */
+        frame.appendChild(el('div', 'post-splash-perf', perfSnapshot().text));
 
         return frame;
     }
@@ -610,6 +932,11 @@
 
         hint.appendChild(box);
         container.appendChild(hint);
+
+        /* Перегрев не лечится перезагрузкой: журнал NVRAM помнит прошлый запуск. */
+        thermalNoticeEl = el('div', 'post-thermal', '');
+        container.appendChild(thermalNoticeEl);
+        applyThermalOverride();
 
         /* Лого на экране: только теперь клавиши BIOS видны. */
         splashVisible = true;
@@ -686,6 +1013,18 @@
             window.clearTimeout(setupTimer);
             setupTimer = null;
         }
+
+        removeErrorScreen();      // экран ошибки живёт своей жизнью
+
+        /* Артефакты перегрева привязаны к этому контейнеру: гасим их здесь,
+         * а Setup включит свои, если перегрев остался в журнале. */
+        if (thermalActive) {
+            if (window.SurgeonOverheat && typeof window.SurgeonOverheat.stop === 'function') {
+                window.SurgeonOverheat.stop();
+            }
+            thermalActive = false;
+        }
+
         if (container && container.parentNode) {
             container.parentNode.removeChild(container);
         }
@@ -695,6 +1034,7 @@
         delProgressEl = null;
         delPresses    = 0;
         splashVisible = false;
+        thermalNoticeEl = null;
     }
 
     function launchSetup() {
@@ -706,12 +1046,57 @@
         finishPOST();
     }
 
+    /* Boot guard: проверку делает Click BIOS — здесь только решение POST. */
+    function bootGuardReason() {
+        var guard = window.SurgeonBootGuard;
+
+        if (!guard || typeof guard.check !== 'function') { return null; }
+        return guard.check(null);
+    }
+
+    function denyBoot(reason) {
+        var guard = window.SurgeonBootGuard;
+
+        console.error('[BIOS] Boot guard: ' + reason);
+
+        /* Экран "No Bootable Device" живёт в Click BIOS: BIOS молчит — грузимся. */
+        if (guard && typeof guard.show === 'function') {
+            guard.show(reason);
+            return;
+        }
+        console.error('[BIOS] SurgeonBootGuard.show() не найден — экран отказа недоступен.');
+    }
+
     function finishPOST() {
-        var scan = ensureVirtualDisk();      // финальная проверка накопителя
-        var reg  = ensureRegistry();
+        var scan    = ensureVirtualDisk();   // финальная проверка накопителя
+        var reg     = ensureRegistry();
+        var reason  = bootGuardReason();
+        var thermal = thermalStatus();
+        var record  = thermalRecord();
+        var check;
 
         reg.system_flags.kernel_ring = 0;
         window.SurgeonDiskReady = true;      // зелёный свет бутлоадеру
+
+        /* 1. Первым в очереди пустой VDFS: грузиться нечему, GRUB не запускаем. */
+        if (reason) {
+            denyBoot(reason);
+            return;
+        }
+
+        /* 2. Обязательные пункты Setup не выставлены: ошибка и назад в Setup. */
+        check = setupCheck();
+        if (check && check.pending.length > 0) {
+            haltToSetup('CONFIGURATION REQUIRED', check.pending, false);
+            return;
+        }
+
+        /* 3. Разгон за лимитами (журнал armed): артефакты, ошибка, назад в Setup. */
+        if (record && record.armed === true && thermal.active === true) {
+            haltToSetup('UNSTABLE OVERCLOCK  \u00b7  THERMAL OVERRIDE',
+                thermalDetails(thermal), true);
+            return;
+        }
 
         document.dispatchEvent(new CustomEvent('bios_complete', {
             detail: {
@@ -719,19 +1104,26 @@
                 partitions:  scan.disk.partitions.length,
                 created:     scan.created,
                 disk_ready:  window.SurgeonDiskReady,
-                kernel_ring: reg.system_flags.kernel_ring
+                kernel_ring: reg.system_flags.kernel_ring,
+                speed:       perfSpeed()
             }
         }));
     }
 
     /* --- 13. Точка входа -------------------------------------------------- */
     function init() {
-        /* Чистим RAM симулятора: чужие интервалы жить не должны. */
+        /* Прошлый запуск обязан умереть целиком: процессы, экраны, артефакты. */
         staleProcessesKilled = resetProcessTable();
-        console.log('[BIOS] process table reset (' + staleProcessesKilled + ' killed)');
+        removeErrorScreen();
 
-        /* Реестр железа нужен до первой строки POST. */
+        platform      = null;   // платформа читается заново: Setup мог всё поменять
+        thermalActive = false;
+
         ensureRegistry();
+        console.log('[BIOS] process table reset (' + staleProcessesKilled + ' killed), platform: SATA ' +
+            ensurePlatform().sataMode + ', Legacy USB ' + (ensurePlatform().legacyUsb ? 'on' : 'off') +
+            ', Secure Boot ' + (ensurePlatform().secureBoot ? 'on' : 'off') +
+            ', speed x' + perfSpeed());
 
         /* Экран, перехват клавиш, сам прогон. */
         buildContainer();
@@ -747,8 +1139,19 @@
     window.TPABKA_DISK_KEY          = DISK_KEY;
 
     window.SurgeonPost = {
-        init:    init,
-        runPOST: runPOST,
-        destroy: teardown
+        init:     init,
+        runPOST:  runPOST,
+        destroy:  teardown,
+        platform: readPlatform,
+        perf:     perfSnapshot,
+        check:    setupCheckText,
+        thermal:  thermalStatus
+    };
+
+    /* Часы машины и ускорение от разгона: их читают GRUB и ядро. */
+    window.SurgeonPerf = {
+        snapshot: perfSnapshot,
+        speed:    perfSpeed,
+        text:     function () { return perfSnapshot().text; }
     };
 })(window, document);

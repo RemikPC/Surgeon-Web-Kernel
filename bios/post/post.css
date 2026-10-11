@@ -1,9 +1,9 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.1 (Pre-Alpha)    Файл: bios/post/post.css
+ * Surgeon Kernel PA 0.3    Файл: bios/post/post.css
  * ----------------------------------------------------------------------------
  * Экран POST как на живой плате: чёрный фон, моноширинный шрифт, блочный логотип
- * справа, лента строк слева. Прямые углы, никаких переходов и анимаций; курсора
- * нет — он появится только в Setup.
+ * справа, лента строк слева. Прямых углов, курсора и анимаций нет; курсор
+ * появится только в Setup.
  * ========================================================================== */
 
 /* 1. Корневой контейнер: во весь экран, поверх остальных слоёв. */
@@ -160,6 +160,15 @@
     white-space: pre;
 }
 
+/* Часы машины: разгон (или троттлинг) виден сразу на логотипе. */
+.post-splash-perf {
+    margin-top: 8px;
+    max-width: 92vw;
+    font-size: 12px;
+    letter-spacing: 1px;
+    color: #c8102e;
+}
+
 /* 6. Подсказка про клавиши. */
 .post-splash-hint {
     display: flex;
@@ -193,7 +202,77 @@
     display: none;
 }
 
-/* 7. Узкий экран: надпись мельче, чтобы рамка не разъезжалась. */
+/* 7. Аварийный режим: строка перегрева под подсказкой клавиш. */
+.post-thermal {
+    align-self: center;
+    margin-top: 14px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-align: center;
+    white-space: pre-wrap;
+    color: #ff5a5a;
+}
+
+.post-thermal:empty {
+    display: none;
+}
+
+/* 8. Экран ошибки: машина не прошла проверку и через 2 сек уходит в Setup. */
+.post-error-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+    background-color: #000000;
+    color: #e8e8e8;
+    font-family: 'Consolas', 'Courier New', Courier, monospace;
+    font-size: 15px;
+    line-height: 1.4;
+    z-index: 15000;
+    overflow: hidden;
+}
+
+.post-error-box {
+    min-width: 60vw;
+    max-width: 92vw;
+    padding: 22px 26px;
+    border: 1px solid #c8102e;
+    background-color: #140005;
+    box-sizing: border-box;
+}
+
+.post-error-title {
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: #8f8f8f;
+}
+
+.post-error-head {
+    margin: 10px 0 14px 0;
+    font-size: 20px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    color: #ff5a5a;
+}
+
+.post-error-line {
+    white-space: pre-wrap;
+    color: #ffd6d6;
+}
+
+.post-error-foot {
+    margin-top: 16px;
+    letter-spacing: 1px;
+    color: #ff5a5a;
+}
+
+/* 9. Узкий экран: надпись мельче, чтобы рамка не разъезжалась. */
 @media (max-width: 900px) {
     .post-art {
         font-size: 12px;
@@ -202,5 +281,9 @@
     .post-logo {
         font-size: 22px;
         letter-spacing: 4px;
+    }
+
+    .post-thermal {
+        font-size: 11px;
     }
 }

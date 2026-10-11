@@ -1,10 +1,10 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.1 (Pre-Alpha)    Файл: bios/click-bios/click-bios.css
+ * Surgeon Kernel PA 0.3    Файл: bios/click-bios/click-bios.css
  * ----------------------------------------------------------------------------
  * Setup как на железе: плоские панели, прямые углы, рамки в 1px, меню сверху,
  * плотные списки опций, панель System Status справа, строка клавиш внизу.
- * Никаких border-radius, box-shadow, градиентов, transition и @keyframes.
- * Единственное место, где есть курсор: здесь работает мышь.
+ * Без border-radius, box-shadow, градиентов, transition и @keyframes.
+ * Курсор есть только здесь: мышь работает в Setup.
  * ========================================================================== */
 
 /* 1. Корневой контейнер. */
@@ -260,13 +260,25 @@
     font-family: 'Consolas', 'Courier New', monospace;
 }
 
+/* Имя устройства — кнопка: клик меняет устройство слота. */
 .boot-name {
     flex: 1;
     min-width: 0;
+    padding: 0;
+    border: none;
+    background-color: transparent;
     color: #ffffff;
+    font-family: Tahoma, Arial, sans-serif;
+    font-size: 12px;
+    text-align: left;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.boot-name:hover {
+    color: #ff9090;
 }
 
 .boot-arrow {
@@ -517,4 +529,191 @@
     font-size: 11px;
     line-height: 1.5;
     color: #a8a8a8;
+}
+
+/* 13. Переключатели и предупреждения: строки, которые меняют платформу. */
+.bios-toggle {
+    padding: 1px 6px;
+    border: 1px solid transparent;
+    background-color: transparent;
+    color: #ffffff;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.bios-toggle:hover {
+    border-color: #c8102e;
+    background-color: #7d0021;
+}
+
+/* Аварийное предупреждение: рамка в 1px, как у остальных панелей. */
+.bios-alert {
+    margin: 6px 0;
+    padding: 5px 7px;
+    border: 1px solid #c8102e;
+    background-color: #260008;
+    color: #ff8080;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+/* Подтверждение клика: видно только когда текст есть. */
+.uefi-notice {
+    display: none;
+    margin-top: 10px;
+    padding: 5px 7px;
+    border-left: 2px solid #c8102e;
+    background-color: #1b1b1b;
+    color: #c8c8c8;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.uefi-notice.is-visible {
+    display: block;
+}
+
+/* Значение вне безопасного диапазона: красный моноширинный текст. */
+.is-danger {
+    color: #ff5a5a;
+}
+
+/* Ручной ввод рядом с ползунком: та же плоская рамка, цифры справа. */
+.oc-input {
+    width: 66px;
+    margin-left: 10px;
+    padding: 1px 4px;
+    border: 1px solid #5a5a5a;
+    background-color: #111111;
+    color: #ffffff;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    text-align: right;
+}
+
+/* 14. Аварийный режим перегрева: корень сыплется, полоса висит поверх. */
+.surgeon-overheat {
+    will-change: filter, transform;
+}
+
+.thermal-banner {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 30px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 12px;
+    background-color: #7d0021;
+    border-top: 1px solid #c8102e;
+    color: #ffffff;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    z-index: 10010;
+}
+
+.thermal-banner-title {
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+
+.thermal-banner-reset {
+    margin: 0 14px;
+    padding: 3px 10px;
+    border: 1px solid #ffffff;
+    background-color: #260008;
+    color: #ffffff;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 11px;
+    letter-spacing: 1px;
+    cursor: pointer;
+}
+
+.thermal-banner-reset:hover {
+    background-color: #ffffff;
+    color: #7d0021;
+}
+
+.thermal-banner-detail {
+    color: #ffd6d6;
+}
+
+/* 15. Экран "No Bootable Device": чёрный экран и единственный выход. */
+.noboot-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    padding: 40px 48px;
+    box-sizing: border-box;
+    background-color: #000000;
+    color: #c8c8c8;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow: hidden;
+    z-index: 20000;
+}
+
+.noboot-log {
+    white-space: pre-wrap;
+}
+
+.noboot-line {
+    min-height: 1.5em;
+}
+
+.noboot-detail {
+    margin-top: 18px;
+    color: #ff5a5a;
+}
+
+/* Курсор мигает интервалом из JS — анимаций в проекте нет. */
+.noboot-cursor {
+    display: inline-block;
+    width: 8px;
+    margin-left: 6px;
+    background-color: #c8c8c8;
+}
+
+/* 16. Цветные полосы перегрева: случайные места, случайные цвета. */
+.glitch-bars {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 10005;
+}
+
+.glitch-bar {
+    position: absolute;
+    display: block;
+}
+
+/* 17. Полоса чек-листа: видна, пока обязательные пункты не выставлены. */
+.setup-banner {
+    display: none;
+    padding: 5px 12px;
+    background-color: #2a0008;
+    border-bottom: 1px solid #c8102e;
+    color: #ff8080;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+
+.setup-banner.is-visible {
+    display: block;
+}
+
+/* Значение в норме: зелёный моноширинный текст. */
+.is-ok {
+    color: #63d471;
 }

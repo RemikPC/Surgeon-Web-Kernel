@@ -1,5 +1,5 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.1 (Pre-Alpha)    Файл: boot/bootloader/bootloader.css
+ * Surgeon Kernel PA 0.3    Файл: boot/bootloader/bootloader.css
  * ----------------------------------------------------------------------------
  * Синий DOS-экран GRUB: псевдографическая рамка, инверсия активной строки и
  * лёгкая CRT-развёртка. Курсора нет — он вернётся только в Click BIOS.
@@ -178,4 +178,23 @@
     margin-top: 0.45em;
     color: #ffff55;
     font-weight: 700;
+}
+
+/* 7. Предупреждения платформы: SATA Mode [IDE], Legacy USB, Secure Boot. */
+.grub-notice {
+    flex: 0 0 auto;
+    width: 68ch;
+    margin-top: 1.2em;
+    text-align: left;
+    white-space: pre-wrap;
+    color: #ff5555;
+}
+
+.grub-notice-line {
+    white-space: pre-wrap;
+}
+
+/* Legacy USB [Disabled]: мыши в системе нет — строки на неё не реагируют. */
+.grub-row--item.is-input-off {
+    cursor: default;
 }
