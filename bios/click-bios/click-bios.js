@@ -10,7 +10,7 @@
  *                     [Enabled]: без этих трёх пунктов POST не пустит машину
  *                     дальше и через 2 сек вернёт вас сюда же;
  *   Boot Priority   — VDFS первым без установленных сборок роняет машину в
- *                     "No Bootable Device" (выход — F5);
+ *                     "No Bootable Device" (выход — F5 или <Del> x5 в Setup);
  *   Разгон CPU      — множитель и напряжение: правильные значения реально
  *                     ускоряют POST и GRUB, запредельные — минус 30% частоты;
  *   Разгон памяти   — XMP-профиль или ручные частота/напряжение/тайминги:
@@ -21,6 +21,10 @@
  *
  * Артефакты перегрева появляются только после Save & Exit: в самом Setup
  * экран чистый, о проблеме говорит красная полоса внизу.
+ *
+ * Аварийные выходы (Ctrl+Alt+R и кнопка COOL DOWN) снимают разгон за лимитами
+ * и журнал перегрева, но НЕ трогают чек-лист: XMP и порядок загрузки остаются
+ * на месте — иначе из перегрева человек попадал в цикл Setup -> POST.
  *
  * NVRAM (localStorage) — контракт с POST, GRUB и ядром:
  *   surgeon_boot_order     [ 'Live-USB ...', 'Surgeon Hard Disk (VDFS)' ]
@@ -120,6 +124,8 @@
     var KEY_F5     = 116;
     var KEY_R      = 82;
     var KEY_ESC    = 27;
+    var KEY_DELETE = 46;
+    var DEL_PRESSES = 5;          // столько <Del> открывает Setup и с экрана отказа
     var PA_VERSION = 'PA 0.3';
     var BIOS_VER   = '5.20';
     var BIOS_BUILD = '10/10/2026';
@@ -626,6 +632,13 @@
         return null;
     }
 
+    /* Мост к VDFS: POST спрашивает чек-лист раньше init(), поэтому вне Setup
+     * значение берём из NVRAM, а не из умолчаний модуля. */
+    function vdfsBridgeEnabled() {
+        if (!state.container) { loadPlatformSettings(); }
+        return !!state.storage.vdfs_bridge;
+    }
+
     /* --- 3e. Чек-лист Setup: без этих пунктов машина не поедет ------------- */
     /* POST спрашивает pending(): пока список не пуст, он показывает ошибку и
      * через 2 секунды возвращает пользователя сюда же. */
@@ -651,8 +664,8 @@
             label: 'VDFS Bridge',
             row:   'REQUIRED: VDFS Bridge',
             fix:   'SETTINGS -> Storage: включить мост к виртуальному диску',
-            value: function () { return boolLabel(!!state.storage.vdfs_bridge); },
-            done:  function () { return !!state.storage.vdfs_bridge; }
+            value: function () { return boolLabel(vdfsBridgeEnabled()); },
+            done:  function () { return vdfsBridgeEnabled(); }
         }
     ];
 
@@ -891,21 +904,36 @@
     }
 
     /* --- 3e. Экран "No Bootable Device" ----------------------------------- */
-    /* Setup гаснет, GRUB не грузится: остаётся только F5. */
-    var nobootTimer = null;
+    /* Setup гаснет, GRUB не грузится. Выхода два: F5 — перезагрузка,
+     * <Del> x DEL_PRESSES — назад в Setup, где лежит Boot Priority. Второй
+     * выход обязателен: без него экран был тупиком, и починить порядок
+     * загрузки из него было нельзя. */
+    var nobootTimer      = null;
+    var nobootHandler    = null;
+    var nobootPresses    = 0;
+    var nobootProgressEl = null;
 
-    var NOBOOT_LINES = [
-        'SURGEON CLICK BIOS 5  \u00b7  POST  \u00b7  ' + PA_VERSION,
-        '',
-        'Boot Option #1 : Surgeon Hard Disk (VDFS)',
-        'Boot Option #2 : Live-USB Surgeon Flash Drive',
-        '',
-        'An operating system wasn\'t found. Try disconnecting any drives that',
-        'don\'t contain an operating system.',
-        'Reboot via F5...',
-        '',
-        'No Bootable Device Found. Insert Boot Media and Press Any Key'
-    ];
+    /* Строки чёрного экрана: порядок загрузки — настоящий, из NVRAM. */
+    function noBootLines() {
+        var order = (isArray(state.bootOrder) && state.bootOrder.length > 0)
+            ? state.bootOrder
+            : loadBootOrder();
+
+        return [
+            'SURGEON CLICK BIOS 5  \u00b7  POST  \u00b7  ' + PA_VERSION,
+            '',
+            'Boot Option #1 : ' + (order[0] || DEV_USB),
+            'Boot Option #2 : ' + (order[1] || DEV_VDFS),
+            '',
+            'An operating system wasn\'t found. Try disconnecting any drives that',
+            'don\'t contain an operating system.',
+            'Fix : <Del> x' + DEL_PRESSES + ' -> SETTINGS -> Boot Priority:',
+            '      ' + DEV_USB + ' must stay in slot #1.',
+            'Reboot via F5...',
+            '',
+            'No Bootable Device Found. Insert Boot Media and Press Any Key'
+        ];
+    }
 
     function hideLayer(id) {
         var node = document.getElementById(id);
@@ -915,9 +943,10 @@
         node.style.display = 'none';
     }
 
-    /* Намертво гасит машину: чёрный экран, мигающий курсор, выход только F5. */
+    /* Намертво гасит машину: чёрный экран, мигающий курсор. Выходы — F5
+     * (перезагрузка) и <Del> x DEL_PRESSES (назад в Setup). */
     function showNoBootableDevice(reason) {
-        var layer, log, detail, handler, i;
+        var layer, log, detail, lines, i;
 
         stopThermalArtifacts();
         removeThermalBanner();
@@ -936,13 +965,18 @@
         layer.id = NOBOOT_ID;
         log      = el('div', 'noboot-log');
 
-        for (i = 0; i < NOBOOT_LINES.length; i++) {
-            log.appendChild(el('div', 'noboot-line', NOBOOT_LINES[i]));
+        lines = noBootLines();
+        for (i = 0; i < lines.length; i++) {
+            log.appendChild(el('div', 'noboot-line', lines[i]));
         }
 
         detail = el('div', 'noboot-line noboot-detail', reason);
         detail.appendChild(el('span', 'noboot-cursor', '\u2588'));
         log.appendChild(detail);
+
+        /* Строку прогресса <Del> переписывает обработчик клавиш. */
+        nobootProgressEl = el('div', 'noboot-line', '');
+        log.appendChild(nobootProgressEl);
 
         layer.appendChild(log);
         document.body.appendChild(layer);
@@ -955,24 +989,64 @@
             cursor.style.visibility = (cursor.style.visibility === 'hidden') ? 'visible' : 'hidden';
         }, 500);
 
-        /* Единственный выход — F5. Остальные клавиши тут ничего не делают. */
-        handler = function (event) {
+        /* Клавиши гасим все: F5 — перезагрузка, <Del> x5 — назад в Setup. */
+        nobootPresses = 0;
+        nobootHandler = function (event) {
             var code = event.keyCode || event.which;
             var key  = event.key || '';
 
             event.preventDefault();
 
             if (code === KEY_F5 || key === 'F5') {
-                if (nobootTimer !== null) {
-                    window.clearInterval(nobootTimer);
-                    nobootTimer = null;
-                }
+                leaveNoBootableDevice();
                 window.location.reload();
+                return;
+            }
+
+            if (code === KEY_DELETE || key === 'Delete') {
+                nobootPresses++;
+                console.log('[CLICK BIOS] Setup request from no-boot screen: <Del> x' +
+                    nobootPresses + ' / ' + DEL_PRESSES);
+
+                if (nobootPresses >= DEL_PRESSES) {
+                    leaveNoBootableDevice();
+                    console.warn('[CLICK BIOS] Back to Setup from no-boot screen: ' +
+                        'Boot Option #1 must be ' + DEV_USB + '.');
+                    init();                  // чинить порядок загрузки можно только там
+                    return;
+                }
+
+                if (nobootProgressEl) {
+                    nobootProgressEl.textContent = 'Setup Request : ' + nobootPresses + '/' +
+                        DEL_PRESSES + ' \u2014 press <Del> ' + (DEL_PRESSES - nobootPresses) +
+                        ' more time(s)';
+                }
             }
         };
-        window.addEventListener('keydown', handler, true);
+        window.addEventListener('keydown', nobootHandler, true);
 
         console.error('[CLICK BIOS] No bootable device: ' + reason);
+    }
+
+    /* Снимает чёрный экран целиком: таймер, обработчик и сам слой. */
+    function leaveNoBootableDevice() {
+        var node = document.getElementById(NOBOOT_ID);
+
+        if (nobootTimer !== null) {
+            window.clearInterval(nobootTimer);
+            nobootTimer = null;
+        }
+        if (nobootHandler) {
+            window.removeEventListener('keydown', nobootHandler, true);
+            nobootHandler = null;
+        }
+        if (node && node.parentNode) {
+            node.parentNode.removeChild(node);
+        }
+
+        nobootPresses    = 0;
+        nobootProgressEl = null;
+        return true;
     }
 
     /* --- 4. Мелкие хелперы ------------------------------------------------- */
@@ -1361,7 +1435,8 @@
             'F1:Help   ESC:Exit   \u2191\u2193:Select Item   ' +
             '\u2190\u2192:Change Value   F10:Save & Exit'));
         legend.appendChild(el('div', 'uefi-legend-keys',
-            'Ctrl+Alt+R:Load Defaults   F5:Reboot (после "No Bootable Device")'));
+            'Ctrl+Alt+R:Drop OC Profile   F5:Reboot   <Del> x' + DEL_PRESSES +
+            ':Setup (после "No Bootable Device")'));
         legend.appendChild(el('div', 'uefi-legend-build',
             'Click BIOS 5  \u00b7  Rev. ' + BIOS_REV + '  \u00b7  ' + BIOS_BUILD));
 
@@ -1613,20 +1688,30 @@
             'в песочницу пустят только сертифицированное ядро Surgeon.'));
         content.appendChild(secure);
 
-        /* Аварийный выход: единственный способ погасить артефакты перегрева. */
+        /* Аварийный выход: гасит перегрев и разгон за лимитами, НЕ снося
+         * настройки чек-листа. Полный сброс NVRAM — отдельной строкой. */
         recovery = groupBox('Reset / Recovery');
-        recovery.appendChild(actionRow('Restore Defaults (Ctrl+Alt+R)',
-            'LOAD UEFI DEFAULTS', function () { emergencyReset(); }).row);
+        recovery.appendChild(actionRow('Clear Overclock (Ctrl+Alt+R)',
+            'DROP OC PROFILE', function () { emergencyReset(); }).row);
         recovery.appendChild(actionRow('Clear Thermal Override',
             'COOL DOWN', function () {
-                restoreDefaults();
+                clearThermalOverride();
                 removeThermalBanner();
                 switchTab('settings');
-                showNotice('Артефакты сняты: OC, SATA, USB и Secure Boot — по умолчанию.');
+                showNotice('Артефакты сняты: разгон за лимитами сброшен, ' +
+                    'XMP и порядок загрузки на месте.');
+            }).row);
+        recovery.appendChild(actionRow('Restore Defaults (NVRAM reset)',
+            'LOAD UEFI DEFAULTS', function () {
+                restoreDefaults();
+                switchTab('settings');
+                showNotice('Заводские значения: XMP снова Disabled — его надо ' +
+                    'выставить заново на вкладке OC.');
             }).row);
         recovery.appendChild(biosNote(
             'Заводские значения: флешка первой, SATA [AHCI], Legacy USB [Enabled], ' +
-            'Secure Boot [Disabled], память DDR4-3200 CL16, 1.032V / 36x.'));
+            'Secure Boot [Disabled], память DDR4-3200 CL16, 1.032V / 36x. ' +
+            'XMP после полного сброса выключен: POST попросит выставить его заново.'));
         content.appendChild(recovery);
     }
 
@@ -2157,21 +2242,57 @@
         window.location.reload();
     }
 
-    /* Ctrl+Alt+R: аварийный выход. Гасит артефакты и возвращает заводские
-     * значения — единственный способ вылезти из перегрева без перезагрузки. */
+    /* Аварийный сброс перегрева: убирает разгон за лимитами и журнал, но НЕ
+     * трогает настройки, без которых машина не загрузится (XMP, Boot Priority,
+     * SATA, USB, Secure Boot). Иначе Ctrl+Alt+R сносил XMP — пункт чек-листа —
+     * и человек оставался в цикле Setup -> POST -> Setup. */
+    function clearThermalOverride() {
+        var oc      = (state.oc && typeof state.oc.voltage === 'number') ? state.oc : loadOC();
+        var mem     = memoryProfile();
+        var clamped = false;
+
+        if (oc.voltage > SAFE_OC.voltage)       { oc.voltage = DEFAULT_OC.voltage;       clamped = true; }
+        if (oc.multiplier > SAFE_OC.multiplier) { oc.multiplier = DEFAULT_OC.multiplier; clamped = true; }
+
+        /* Напряжение DRAM выше лимита держит профиль XMP: возвращаем паспорт. */
+        if (mem.dram_voltage > SAFE_MEM.dram_voltage) {
+            mem.dram_voltage = DEFAULT_MEMORY.dram_voltage;
+            clamped = true;
+        }
+        if (mem.xmp === 'Manual') {
+            if (mem.freq_mhz > SAFE_MEM.freq_mhz) { mem.freq_mhz = DEFAULT_MEMORY.freq_mhz; clamped = true; }
+            if (mem.cl > SAFE_MEM.cl)             { mem.cl = DEFAULT_MEMORY.cl;             clamped = true; }
+        }
+
+        state.oc  = { voltage: oc.voltage, multiplier: oc.multiplier };
+        state.mem = mem;
+
+        writeJSON(OC_KEY, state.oc);
+        writeJSON(MEMORY_KEY, state.mem);
+
+        disarmThermal();               // журнал: armed = false, артефактов больше нет
+        updateMetrics();
+        syncOverclockFlag();
+        evaluateThermal();
+
+        console.warn('[CLICK BIOS] Thermal override cleared: overclock ' +
+            (clamped ? 'clamped to safe values' : 'was already safe') +
+            ', setup checklist kept (XMP ' + state.mem.xmp + ')');
+        return clamped;
+    }
+
+    /* Ctrl+Alt+R: аварийный выход из перегрева. Гасит артефакты и сбрасывает
+     * разгон за лимитами — настройки машины остаются на месте. */
     function emergencyReset() {
         stopThermalArtifacts();
         removeThermalBanner();
-        restoreDefaults();          // NVRAM: OC, память, SATA, USB, Secure Boot, журнал
-        evaluateThermal();          // перегрев уже не должен включиться
-
-        if (state.bannerEl) { removeThermalBanner(); }
-
+        clearThermalOverride();     // разгон и журнал: чек-лист остаётся целым
         switchTab(state.tab);       // вкладка перерисовывается с новыми цифрами
 
-        console.warn('[CLICK BIOS] EMERGENCY RESET (Ctrl+Alt+R): NVRAM restored to ' +
-            'factory defaults, thermal override disarmed');
-        showNotice('Ctrl+Alt+R: заводские значения загружены, артефакты сняты.');
+        console.warn('[CLICK BIOS] EMERGENCY RESET (Ctrl+Alt+R): overclock clamped, ' +
+            'thermal override disarmed, NVRAM settings kept');
+        showNotice('Ctrl+Alt+R: разгон за лимитами сброшен, артефакты сняты. ' +
+            'XMP и порядок загрузки сохранены.');
     }
 
     function destroy() {

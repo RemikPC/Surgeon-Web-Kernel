@@ -810,8 +810,8 @@
 
         if (thermalNoticeEl) {
             thermalNoticeEl.textContent = 'EMERGENCY THERMAL OVERRIDE: ' + text +
-                '  \u00b7  искажения экрана включены  \u00b7  сброс: <Del> x' + DEL_PRESSES +
-                ' -> Setup -> Ctrl+Alt+R';
+                '  \u00b7  искажения экрана включены  \u00b7  сброс разгона: <Del> x' + DEL_PRESSES +
+                ' -> Setup -> Ctrl+Alt+R (XMP и Boot Priority сохранятся)';
         }
 
         console.warn('[POST] Thermal override from NVRAM (armed): ' + text);
@@ -1078,23 +1078,27 @@
         reg.system_flags.kernel_ring = 0;
         window.SurgeonDiskReady = true;      // зелёный свет бутлоадеру
 
-        /* 1. Первым в очереди пустой VDFS: грузиться нечему, GRUB не запускаем. */
-        if (reason) {
-            denyBoot(reason);
-            return;
-        }
-
-        /* 2. Обязательные пункты Setup не выставлены: ошибка и назад в Setup. */
+        /* 1. Обязательные пункты Setup не выставлены: таблица с адресами
+         * правки и возврат в Setup. Проверка идёт первой: её таблица чинится
+         * на месте, а экран boot guard — почти тупик, и показывать его
+         * раньше подсказки нельзя. */
         check = setupCheck();
         if (check && check.pending.length > 0) {
             haltToSetup('CONFIGURATION REQUIRED', check.pending, false);
             return;
         }
 
-        /* 3. Разгон за лимитами (журнал armed): артефакты, ошибка, назад в Setup. */
+        /* 2. Разгон за лимитами (журнал armed): артефакты, ошибка, назад в Setup. */
         if (record && record.armed === true && thermal.active === true) {
             haltToSetup('UNSTABLE OVERCLOCK  \u00b7  THERMAL OVERRIDE',
                 thermalDetails(thermal), true);
+            return;
+        }
+
+        /* 3. Последним — пустой VDFS первым в очереди: грузиться нечему,
+         * GRUB не запускаем. Оттуда <Del> x5 всё равно ведёт в Setup. */
+        if (reason) {
+            denyBoot(reason);
             return;
         }
 
