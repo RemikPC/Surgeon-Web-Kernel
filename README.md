@@ -20,3 +20,7 @@ for SWB(Surgeon Web Kernel) pre-alpha 0.0.3
 15:17(Moscow) 11.10.2026
 kernel has been created
 for SWB(Surgeon Web Kernel) pre-alpha 0.0.4
+
+16:37(Moscow) 11.10.2026
+hot-fix bios
+for SWB(Surgeon Web Kernel) pre-alpha 0.0.4.2
