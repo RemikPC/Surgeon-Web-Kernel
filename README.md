@@ -12,3 +12,7 @@ for SWB(Surgeon Web Kernel) pre-alpha 0.0.2
 11:17(Moscow) 11.10.2026
 expanding BIOS capabilities
 for SWB(Surgeon Web Kernel) pre-alpha 0.0.3
+
+11:41(Moscow) 11.10.2026
+project closed?
+for SWB(Surgeon Web Kernel) pre-alpha 0.0.3
