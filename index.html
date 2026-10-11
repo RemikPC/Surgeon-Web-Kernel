@@ -103,7 +103,7 @@
             /* Шаг 3: параметры, которые бутлоадер отдаёт после выбора. */
             document.addEventListener('boot_complete', function (e) {
                 console.log('Ядро получило параметры загрузки:', e.detail);
-                // На этапе 2 отсюда запустится core/os_core.js
+                // Ядро слушает boot_complete само: core/os_core.js поднимает консоль
             });
 
             document.addEventListener('bios_complete', startBootloader);

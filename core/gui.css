@@ -1,0 +1,40 @@
+/* ============================================================================
+ * Surgeon Kernel PA 0.3    Файл: core/gui.css
+ * ----------------------------------------------------------------------------
+ * Каркас графической оболочки. Пока здесь только площадка под окна: чёрный
+ * слой поверх текстовой консоли и корень оконного движка. Окна рисует менеджер
+ * GUI (следующие этапы) — он вешает свои классы на .surgeon-window-root.
+ * ========================================================================== */
+
+/* 1. Слой оболочки: пустой экран до старта оконного движка. */
+#surgeon-desktop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 10002;
+    box-sizing: border-box;
+    overflow: hidden;
+    background-color: #000000;
+    color: #e8e8e8;
+    font-family: 'Consolas', 'Courier New', Courier, monospace;
+}
+
+/* 2. Корень окон: сюда GUI-движок складывает окна и панели. */
+.surgeon-window-root {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    color: inherit;
+}
+
+/* 3. Корень окон появился в кадре: оболочка снимает заглушку. */
+.surgeon-window-root.is-visible {
+    display: flex;
+}

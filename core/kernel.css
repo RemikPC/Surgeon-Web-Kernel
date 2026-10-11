@@ -1,0 +1,227 @@
+/* ============================================================================
+ * Surgeon Kernel PA 0.3 — core/kernel.css
+ * Чёрная серверная консоль: бело-серый моноширинный текст 13.5px, приглушённые
+ * теги строк. Баннер WELCOME TO SURGEON KERNEL и вывод help — зелёные.
+ * Приглашение root@Surgeon_OS:~# — обычная строка ленты, а не панель внизу;
+ * скроллером работает сам #surgeon-terminal.
+ * ========================================================================== */
+
+/* 1. Корневой слой: во весь экран, поверх GRUB и Setup. Он же скроллер. */
+#surgeon-terminal,
+#surgeon-terminal * {
+    box-sizing: border-box;
+}
+
+#surgeon-terminal {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 10001;
+
+    margin: 0;
+    padding: 10px 12px;
+    overflow-x: hidden;
+    overflow-y: auto;
+
+    display: flex;
+    flex-direction: column;
+
+    background-color: #000000;
+    color: #dcdcdc;
+
+    font-family: Consolas, 'Lucida Console', 'Courier New', Courier, monospace;
+    font-size: 13.5px;
+    line-height: 1.35;
+    letter-spacing: 0;
+    text-shadow: 0 0 1px rgba(255, 255, 255, 0.12);   /* без неона */
+
+    cursor: none;
+    user-select: none;
+    -webkit-user-select: none;
+    outline: none;
+
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a3a #000000;
+}
+
+/* Тонкий серый скроллбар. */
+#surgeon-terminal::-webkit-scrollbar {
+    width: 9px;
+}
+
+#surgeon-terminal::-webkit-scrollbar-track {
+    background-color: #000000;
+}
+
+#surgeon-terminal::-webkit-scrollbar-thumb {
+    background-color: #333333;
+    border: 2px solid #000000;
+}
+
+/* CRT-развёртка: fixed — держится на месте, пока строки уезжают вверх. */
+#surgeon-terminal::after {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0)    0px,
+        rgba(0, 0, 0, 0)    2px,
+        rgba(0, 0, 0, 0.10) 2px,
+        rgba(0, 0, 0, 0.10) 3px
+    );
+}
+
+/* 2. Экран и лента: прокручивается контейнер, а не лента. */
+.kernel-screen {
+    position: relative;
+    z-index: 2;
+    flex: 0 0 auto;              /* лента не сжимается: контейнер её прокрутит */
+    width: 100%;
+    min-height: 0;
+}
+
+.kernel-log {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.kernel-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 1.35em;
+    color: #dcdcdc;
+}
+
+/* 3. Теги строк: цвет = важность. */
+.kernel-line.is-ok {
+    color: #ffffff;
+}
+
+.kernel-line.is-info {
+    color: #dcdcdc;
+}
+
+.kernel-line.is-dim {
+    color: #8c8c8c;
+}
+
+.kernel-line.is-warn {
+    color: #cdb37a;
+}
+
+.kernel-line.is-err,
+.kernel-line.is-mce {
+    color: #c47878;
+}
+
+.kernel-line.is-boot {
+    color: #ffffff;
+    font-weight: bold;
+}
+
+.kernel-line.is-flush {
+    color: #bdbdbd;
+    letter-spacing: 1px;
+}
+
+/* 4. Баннер WELCOME TO SURGEON KERNEL, его рамка и вывод help — зелёные. */
+.kernel-banner {
+    color: #58d858;
+    font-weight: bold;
+}
+
+.kernel-banner.is-rule {
+    color: #2f8f2f;
+}
+
+.kernel-line.is-help {
+    color: #58d858;
+}
+
+/* 5. Приглашение, набор, эхо и мигающая каретка в конце живой строки. */
+.kernel-input-row,
+.kernel-echo {
+    white-space: pre-wrap;
+    min-height: 1.35em;
+}
+
+.kernel-prompt {
+    color: #ffffff;
+    font-weight: bold;
+}
+
+.kernel-input-text,
+.kernel-echo {
+    color: #dcdcdc;
+}
+
+.kernel-caret {
+    display: inline-block;
+    width: 0.62em;
+    margin-left: 1px;
+    color: #ffffff;
+    background-color: transparent;
+    text-shadow: 0 0 4px rgba(255, 255, 255, 0.45);
+    animation: kernel-caret-blink 1.05s steps(1, end) infinite;
+}
+
+@keyframes kernel-caret-blink {
+    0%,
+    49% {
+        opacity: 1;
+    }
+    50%,
+    100% {
+        opacity: 0;
+    }
+}
+
+/* Ввод выключен: Legacy USB [Disabled] в Setup. */
+.kernel-line.is-input-off {
+    color: #cdb37a;
+}
+
+/* 6. Погашенный монитор: shutdown (ACPI S5) и reboot. */
+.kernel-off {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10004;
+
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+
+    padding: 16px 18px;
+
+    background-color: #000000;
+    color: #9a9a9a;
+
+    font-family: Consolas, 'Lucida Console', 'Courier New', Courier, monospace;
+    font-size: 13.5px;
+    line-height: 1.35;
+    letter-spacing: 1px;
+    text-shadow: none;
+
+    cursor: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* 7. reduced-motion: каретка горит ровно. */
+@media (prefers-reduced-motion: reduce) {
+    .kernel-caret {
+        animation: none;
+        opacity: 1;
+    }
+}
