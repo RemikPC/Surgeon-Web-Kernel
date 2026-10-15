@@ -1,9 +1,12 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.3 — core/kernel.css
- * Чёрная серверная консоль: бело-серый моноширинный текст 13.5px, приглушённые
- * теги строк. Баннер WELCOME TO SURGEON KERNEL и вывод help — зелёные.
- * Приглашение root@Surgeon_OS:~# — обычная строка ленты, а не панель внизу;
- * скроллером работает сам #surgeon-terminal.
+ * Surgeon Kernel alpha 0.1 — core/kernel.css
+ * Чёрная консоль: моноширинный текст 13.5px, приглушённые теги, зелёные баннер
+ * и help. Приглашение — обычная строка ленты, скроллит сам #surgeon-terminal.
+ *
+ * 8. .is-analog — видеодрайвера нет: экран 640x480 плывёт.
+ * 9. .is-busy   — ядро печатает, живой строки нет.
+ *
+ * Каретки в консоли нет: мигающий блок живёт только в BIOS (.noboot-cursor).
  * ========================================================================== */
 
 /* 1. Корневой слой: во весь экран, поверх GRUB и Setup. Он же скроллер. */
@@ -79,7 +82,7 @@
     );
 }
 
-/* 2. Экран и лента: прокручивается контейнер, а не лента. */
+/* 2. Экран и лента: скроллит контейнер, лента едет внутри. */
 .kernel-screen {
     position: relative;
     z-index: 2;
@@ -146,7 +149,8 @@
     color: #58d858;
 }
 
-/* 5. Приглашение, набор, эхо и мигающая каретка в конце живой строки. */
+/* 5. Приглашение, набор и эхо. Каретки нет — живая строка это приглашение и
+ * набранный текст; мигающий блок остался только в BIOS (.noboot-cursor). */
 .kernel-input-row,
 .kernel-echo {
     white-space: pre-wrap;
@@ -163,26 +167,8 @@
     color: #dcdcdc;
 }
 
-.kernel-caret {
-    display: inline-block;
-    width: 0.62em;
-    margin-left: 1px;
-    color: #ffffff;
-    background-color: transparent;
-    text-shadow: 0 0 4px rgba(255, 255, 255, 0.45);
-    animation: kernel-caret-blink 1.05s steps(1, end) infinite;
-}
-
-@keyframes kernel-caret-blink {
-    0%,
-    49% {
-        opacity: 1;
-    }
-    50%,
-    100% {
-        opacity: 0;
-    }
-}
+/* Срыв строки на отказ команды: сдвиг и скол ставит ядро инлайн (см. 7c в
+ * os_core.js) — в CSS их нет. */
 
 /* Ввод выключен: Legacy USB [Disabled] в Setup. */
 .kernel-line.is-input-off {
@@ -213,15 +199,36 @@
     letter-spacing: 1px;
     text-shadow: none;
 
+    /* Машина погашена: указателя нет ни здесь, ни в консоли — паника и shutdown
+     * снимают его вместе с вводом (system/mouse.js, detach). */
     cursor: none;
     user-select: none;
     -webkit-user-select: none;
 }
 
-/* 7. reduced-motion: каретка горит ровно. */
-@media (prefers-reduced-motion: reduce) {
-    .kernel-caret {
-        animation: none;
-        opacity: 1;
-    }
+/* 8. Аналоговый режим: видеодрайвера нет — VESA framebuffer не поднялся.
+ * Менеджер ставит класс .is-analog и жмёт слой в 640x480. Расфокус, контраст и
+ * красно-синяя кайма на тексте — так выглядит кабель VGA, а не «тема».
+ * Драйвер встал — класс снят, экран цифровой. */
+#surgeon-terminal.is-analog {
+    filter: blur(0.7px) contrast(1.2);
 }
+
+/* Два сдвинутых теневых слоя дают кайму (ghosting). Краска еле тлеет: 0.1. */
+#surgeon-terminal.is-analog .kernel-line,
+#surgeon-terminal.is-analog .kernel-input-row,
+#surgeon-terminal.is-analog .kernel-echo,
+#surgeon-terminal.is-analog .kernel-banner {
+    text-shadow: -0.8px 0 rgba(255, 70, 70, 0.1), 0.8px 0 rgba(70, 170, 255, 0.1);
+}
+
+/* Люминофор не даёт чистого белого: светлые строки уходят в серый. */
+#surgeon-terminal.is-analog .kernel-line.is-ok,
+#surgeon-terminal.is-analog .kernel-line.is-boot,
+#surgeon-terminal.is-analog .kernel-prompt {
+    color: #f2f2f2;
+}
+
+/* 9. Мьютекс ввода: команда печатает — клавиши падают в пустоту, живой строки
+ * нет, пока не встанет приглашение root@Surgeon_OS:~#. .is-busy — флаг для ядра
+ * и харнесса: видимого курсора у него нет, каретку ядро не рисует нигде. */

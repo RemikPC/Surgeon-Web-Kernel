@@ -1,5 +1,5 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.3    Файл: core/os_recovery.js
+ * Surgeon Kernel alpha 0.1    Файл: core/os_recovery.js
  * ----------------------------------------------------------------------------
  * Аварийный режим ядра. Сюда уходит ветка coreMode = 'recovery' из бутлоадера:
  * штатное ядро не запускается, машина поднимает консоль восстановления.
@@ -13,8 +13,8 @@
 (function (window, document) {
     'use strict';
 
-    var PA_VERSION   = 'PA 0.3';
-    var VERSION_LINE = 'Surgeon OS Recovery Console v0.3';
+    var PA_VERSION   = 'alpha 0.1';
+    var VERSION_LINE = 'Surgeon OS Recovery Console v0.1-alpha';
     var BANNER       = '[ EMERGENCY CRITICAL MODE ] ' + VERSION_LINE;
     var TERMINAL_ID  = 'surgeon-terminal';
     var GRUB_ID      = 'surgeon-grub';
@@ -104,8 +104,8 @@
         line('[ OK ] pww13 file system mounted read-only.', 'is-ok');
         line('[ WARN ] Recovery tools: stage 16 (installer).', 'is-warn');
         line('', 'is-dim');
-        line('Подсказка: штатное ядро не поднималось, машина ждёт сборку восстановителя.', 'is-dim');
-        line(PROMPT + '(консоль восстановления ждёт своей сборки)', 'is-dim');
+        line('Hint: the normal kernel was not started — this console is a placeholder.', 'is-dim');
+        line(PROMPT + '(recovery shell: stage 16, not built yet)', 'is-dim');
 
         console.warn('[RECOVERY] ' + BANNER);
         return state;

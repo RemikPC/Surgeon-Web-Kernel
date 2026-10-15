@@ -1,5 +1,5 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.3    Файл: bios/post/post.js
+ * Surgeon Kernel alpha 0.1    Файл: bios/post/post.js
  * ----------------------------------------------------------------------------
  * Текстовый POST в духе AMIBIOS: шапка с логотипом, лента инициализации,
  * счётчик памяти, сплэш с подсказками <Del> и <F11>.
@@ -28,7 +28,7 @@
     'use strict';
 
     /* --- 1. Тайминги, клавиши, лимиты -------------------------------------- */
-    var PA_VERSION    = 'PA 0.3';
+    var PA_VERSION    = 'alpha 0.1';
     var CONTAINER_ID  = 'surgeon-post';
     var ERROR_ID      = 'surgeon-post-error';
     var LOGO_WORD     = 'SURGEON';

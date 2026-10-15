@@ -1,5 +1,5 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.3    Файл: boot/bootloader/bootloader.js
+ * Surgeon Kernel alpha 0.1    Файл: boot/bootloader/bootloader.js
  * ----------------------------------------------------------------------------
  * Ретро-меню в стиле GRUB: синий DOS-экран, стрелки ↑/↓, Enter и автозапуск
  * через 5 секунд.
@@ -21,6 +21,17 @@
  * Разгон даёт обратный эффект: таймер автозапуска тикает быстрее, потому что
  * частоту берёт у POST (SurgeonPerf).
  *
+ * Мышь в меню работает, пока её ведёт драйвер: указатель появляется только с
+ * паком PS/2 в NVRAM (его поставило ядро в прошлой сессии) — без драйвера
+ * курсора нет ни здесь, ни в консоли ядра. Вдобавок прошивка должна отдать мышь
+ * legacy-коду: пока в Setup стоит Legacy USB Support [Enabled]; при [Disabled]
+ * в меню нет ни клавиатуры, ни мыши — строки не принимают ни клавиш, ни кликов.
+ * Сам указатель держит не бутлоадер, а system/mouse.js: он же ведёт его и в
+ * консоли. Ручной мастер даёт PS/2 · IRQ 12 · 3-byte packets, немой --auto —
+ * generic · 2-byte packets; об этом и говорит строка-предупреждение в меню.
+ * Экран загрузки системы (пункт выбран, меню ушло) указателя не имеет: он
+ * вернётся с shell, когда драйвер в NVRAM.
+ *
  * Ещё одна проверка — на входе: если Boot Option #1 = VDFS, а грузить нечего
  * (сборок нет или все не подписаны при Secure Boot), меню не рисуется вовсе.
  * Решение принимает Click BIOS: SurgeonBootGuard.check() / .show().
@@ -34,7 +45,7 @@
     'use strict';
 
     /* --- 1. Константы ----------------------------------------------------- */
-    var PA_VERSION      = 'PA 0.3';
+    var PA_VERSION      = 'alpha 0.1';
     var CONTAINER_ID    = 'surgeon-grub';
     var EVENT_NAME      = 'boot_complete';
     var STORAGE_KEY     = 'surgeon_installed_distros';
@@ -48,6 +59,10 @@
     var BASE_TICK_MS    = 1000;     // секунда на деление таймера автозапуска
     var IDE_THROTTLE    = 0.7;      // SATA Mode [IDE]: шина на 30% медленнее
     var FRAME_WIDTH     = 66;       // символов между вертикальными │
+
+    /* Legacy USB [Disabled]: прошивка не отдаёт мышь — ни ввода, ни указателя.
+     * Класс носят и строки меню, и сам экран (см. boot/bootloader/bootloader.css). */
+    var INPUT_OFF_CLASS = 'is-input-off';
 
     var INDENT_ROOT     = '  ';     // отступ базовых пунктов
     var INDENT_NESTED   = '      '; // отступ подпунктов (перед └──)
@@ -377,8 +392,9 @@
         row.setAttribute('role', 'option');
         row.setAttribute('aria-label', entry.label);
 
-        /* Мышь — приятный бонус, клавиатура всё равно основная. Но мышь тоже
-         * USB-устройство: при Legacy USB [Disabled] обработчиков нет. */
+        /* Мышь в меню есть — её даёт прошивка; клавиатура всё равно основная.
+         * Но мышь тоже USB-устройство: при Legacy USB [Disabled] обработчиков
+         * нет, и строка остаётся без ввода и без указателя. */
         if (currentPlatform().legacyUsb) {
             row.addEventListener('mouseenter', function () {
                 var hovered = indexOfNode(state.itemEls, this);
@@ -389,7 +405,7 @@
                 if (clicked !== -1) { finalize(clicked); }
             });
         } else {
-            row.classList.add('is-input-off');
+            row.classList.add(INPUT_OFF_CLASS);
         }
 
         return row;
@@ -433,9 +449,20 @@
     }
 
     /* --- 9a. Строки-предупреждения о платформе ---------------------------- */
+    /* Мышь отдаём system/mouse.js: он сам держит указатель и в меню, и в консоли
+     * ядра, а нам оставляет только пак NVRAM и режим драйвера. */
+    function pointerState() {
+        var api = window.SurgeonMouse;
+
+        if (!api) { return null; }
+        if (typeof api.refresh === 'function') { api.refresh('grub'); }
+        return (typeof api.state === 'function') ? api.state() : null;
+    }
+
     /* Пустой список — секции нет: при штатных настройках экран остаётся чистым. */
     function buildPlatformNotice() {
         var platform = currentPlatform();
+        var pointer  = pointerState();
         var lines    = [];
         var box, i;
 
@@ -456,6 +483,26 @@
                 ? 'Secure Boot [Enabled]: незаверенные сборки скрыты — ' +
                   state.blockedDistros.join(', ') + '.'
                 : 'Secure Boot [Enabled]: все установленные сборки подписаны.');
+        }
+        /* Мышь: указатель и в меню, и в консоли ядра ведёт драйвер PS/2 из NVRAM,
+         * поэтому строки говорят ровно то, что человек увидит: есть ли курсор и
+         * каким драйвером он ходит. Без драйвера указателя нет нигде — об этом
+         * тоже стоит сказать, иначе меню выглядит сломанным. */
+        if (pointer) {
+            if (!pointer.installed) {
+                lines.push('Мышь: драйвера PS/2 в NVRAM нет — указателя нет ни в ' +
+                    'меню, ни в консоли ядра (поставить: sudo install mouse).');
+            } else if (!platform.legacyUsb) {
+                lines.push('Мышь: драйвер PS/2 стоит, но Legacy USB Support ' +
+                    '[Disabled] — мыши нет ни в меню, ни в ядре.');
+            } else if (pointer.generic) {
+                lines.push('Мышь: указатель в меню и в консоли ядра — generic · ' +
+                    '2-byte packets: идёт за рукой медленнее (опрос 30 Гц ' +
+                    'вместо 200).');
+            } else {
+                lines.push('Мышь: указатель в меню и в консоли ядра — ' +
+                    'PS/2 · IRQ 12 · 3-byte packets.');
+            }
         }
         if (lines.length === 0) { return null; }
 
@@ -612,7 +659,7 @@
 
     /* --- 14. init() / destroy() ------------------------------------------- */
     function init() {
-        var container, guarded;
+        var container, guarded, pointer, live;
 
         if (state.initialized) { destroy(); }
 
@@ -644,10 +691,34 @@
             (document.body || document.documentElement).appendChild(container);
         }
         container.innerHTML = '';
+
+        /* Слой поднимаем только сейчас: в разметке он погашен, иначе mouse.js
+         * считает меню живым и рисует стрелку поверх POST или Setup. */
+        container.style.display = 'flex';
+
+        /* Legacy USB [Disabled]: прошивка мышь не отдаёт — экран целиком без
+         * указателя. В обычной загрузке класса нет: базово меню и так гасит
+         * курсор, а право на него даёт драйвер PS/2 (system/mouse.js). */
+        if (state.platform.legacyUsb) { container.classList.remove(INPUT_OFF_CLASS); }
+        else                          { container.classList.add(INPUT_OFF_CLASS); }
+
         state.container = container;
 
         container.appendChild(buildScreen());
         container.appendChild(buildFooter());
+
+        /* Указатель в меню — рука драйвера (system/mouse.js), а прошивка лишь
+         * отдаёт мышь legacy-коду. Сверяемся с mouse.js, чтобы строки говорили о
+         * том же, что видит человек. */
+        pointer = (window.SurgeonMouse && typeof window.SurgeonMouse.state === 'function')
+            ? window.SurgeonMouse.state() : null;
+        live    = !!(pointer && pointer.installed && state.platform.legacyUsb);
+        console.log('[GRUB] mouse: ' + (pointer && pointer.installed
+            ? 'PS/2 driver in NVRAM: ' + pointer.driver
+            : 'no PS/2 driver in NVRAM') + ' — ' + (live
+            ? 'pointer live in this menu, and in the kernel console with the shell'
+            : 'no pointer in this menu' + (state.platform.legacyUsb
+                ? '' : ' (Legacy USB Support [Disabled])')));
 
         /* Legacy USB [Disabled] — устройств ввода нет: перехватывать нечего. */
         state.keyHandler = null;

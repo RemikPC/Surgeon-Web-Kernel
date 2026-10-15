@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Surgeon Kernel PA 0.3</title>
+    <title>Surgeon Kernel alpha 0.1</title>
 
     <!-- Слои стилей: BIOS -> бутлоадер -> ядро -> GUI. -->
     <link rel="stylesheet" href="bios/post/post.css">
@@ -15,6 +15,7 @@
     <!-- Модули. defer держит порядок исполнения. -->
     <script src="system/config.js" defer></script>
     <script src="system/keyboard.js" defer></script>
+    <script src="system/mouse.js" defer></script>
     <script src="bios/post/post.js" defer></script>
     <script src="bios/click-bios/click-bios.js" defer></script>
     <script src="boot/bootloader/bootloader.js" defer></script>
@@ -25,6 +26,12 @@
     <script src="net/tpabka_pkg.js" defer></script>
 
     <!-- Каркас монитора: на весь экран. -->
+    <!-- Курсор: своей стрелки ядро не рисует — на экране системный (браузерный)
+         курсор. Указатель держит драйвер: пока в NVRAM нет пака PS/2-мыши, его
+         нет ни в меню загрузки, ни в консоли ядра; консоль получает курсор в
+         готовом shell (system/mouse.js вешает на живой слой класс .sv-pointer).
+         В BIOS Setup мышь есть всегда — она там прошивочная. POST, экран загрузки
+         системы и панель указателя не получают, поэтому по умолчанию он спрятан. -->
     <style>
         html,
         body {
@@ -34,6 +41,7 @@
             height: 100%;
             background-color: #000000;
             overflow: hidden;
+            cursor: none;
         }
 
         #surgeon-monitor {
@@ -41,6 +49,7 @@
             width: 100vw;
             height: 100vh;
             overflow: hidden;
+            cursor: none;
         }
     </style>
 </head>
@@ -49,8 +58,11 @@
     <!-- Монитор: полноэкранный контейнер, внутри три слоя. -->
     <div id="surgeon-monitor">
 
-        <!-- Слой 1 — GRUB, сюда бутлоадер рисует меню. -->
-        <div id="surgeon-grub"></div>
+        <!-- Слой 1 — GRUB, сюда бутлоадер рисует меню. Погашен до init(). Меню с
+             мышью: указатель держит драйвер PS/2 из NVRAM — как и в консоли
+             ядра (system/mouse.js), а прошивка лишь отдаёт мышь legacy-коду
+             (Legacy USB Support). -->
+        <div id="surgeon-grub" style="display: none;"></div>
 
         <!-- Слой 2 — текстовая консоль ядра: логи и командная строка. -->
         <div id="surgeon-terminal" style="display: none;"></div>

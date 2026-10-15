@@ -1,5 +1,5 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.3 — core/os_core.js
+ * Surgeon Kernel alpha 0.1 — core/os_core.js
  * Ядро машины: водопад логов, сводка с зелёным баннером WELCOME TO SURGEON
  * KERNEL и последовательный shell root@Surgeon_OS:~#.
  *
@@ -13,16 +13,42 @@
  * shutdown — ACPI S5: монитор гаснет, ввод мёртв до перезагрузки страницы.
  *
  * API: init / destroy / run / stats / rings / writeln / setRing / powerOff
+ *      emit / printLine / registerCommand / holdInput / setCharDelay / halt
+ *      isInputLocked — мьютекс ввода: true, пока ядро печатает текст (см. 7d)
+ *      history — прошлые команды живого shell: их листают ↑ и ↓ (см. 7c)
+ *
+ * Мьютекс ввода: пока идёт вывод (команда, водопад, полоса загрузки, вопрос
+ * мастера без ответа) клавиши отбрасываются целиком, а
+ * window.SurgeonCore.isInputLocked держит true. Enter посреди чужого вывода
+ * больше не запускает вторую команду поверх первой.
+ *
+ * Курсора в консоли нет вообще: каретку в конце строки ядро не рисует — живая
+ * строка это только приглашение root@Surgeon_OS:~# и набранный текст. Мигающий
+ * курсор остался один на всю машину и живёт в BIOS (bios/click-bios,
+ * .noboot-cursor). Прошлые строки помнит история (7c): ↑ достаёт прошлую
+ * команду, ↓ возвращает к новой — как в Linux и в Windows. Отказ команды виден
+ * строками отказа, сама строка при этом стоит ровно.
+ *
+ * Мышиный указатель к каретке отношения не имеет: право на системный курсор
+ * держит system/mouse.js и отдаёт его только тогда, когда драйвер PS/2 стоит в
+ * NVRAM (его ставит менеджер драйверов) и ядро дошло до shell. Без драйвера
+ * консоль, как и меню загрузки, живёт без единого курсора.
+ *
+ * Этап 4: сюда цепляется менеджер драйверов (drivers/driver_manager.js) —
+ * дописывает свои команды, просит медленный вывод, вешает флаги ACPI и
+ * умеет ронять ядро в панику через halt().
  * ========================================================================== */
 (function (window, document) {
     'use strict';
 
     /* --- 1. Константы ------------------------------------------------------ */
-    var PA_VERSION      = 'PA 0.3';
-    var PA_SEMVER       = 'v0.3-PA (Pre-Alpha)';
+    var PA_VERSION      = 'alpha 0.1';
+    var PA_SEMVER       = 'v0.1-alpha';
     var BUILD_STAMP     = '2026-10-11 / TPABKA-Core-v7';
     var PROMPT          = 'root@Surgeon_OS:~# ';
-    var CARET           = '█';                       // каретка в конце строки ввода
+    /* Каретки в консоли нет: курсор рисует только BIOS. Прошлые команды shell
+     * помнит сам — см. 7c. */
+    var HISTORY_MAX     = 50;                       // строк, что помнит shell
     var HALT_TEXT       = 'System halted. Power down. Please refresh the page to reboot.';
     var RESET_TEXT      = '[ RESET ] Surgeon OS — POST restarting, hold on...';
     var EVENT_NAME      = 'boot_complete';
@@ -52,6 +78,10 @@
     /* Красная зона разгона: за 1.35V железо без охлаждения не держится. */
     var OVERHEAT_VOLTAGE = 1.35;
     var MCE_EVERY        = 5;      // каждая пятая строка водопада — аварийная
+
+    /* Этап 4: штрафы драйверов. Темп задаёт менеджер, ядро только слушается. */
+    var OUTPUT_LINE_CAP  = 6000;   // ms: дольше этого консоль строку не держит
+    var COMMAND_PENALTY  = 95;     // ms на команду при GENERIC-драйверах
 
     /* Водопад: наследие SATA-контроллера из BIOS. */
     var TICK_AHCI       = 10;
@@ -131,11 +161,19 @@
         replayed:    0,            // сколько раз играли dmesg
         mceCount:    0,
         mceLines:    [],           // MCE текущего прогона: экран после сводки пуст
-        shakeNext:   false,        // срыв каретки переезжает на новое приглашение
+        history:     [],           // прошлые команды: ↑ листает их, как в Linux
+        histIndex:   null,         // null — правится живая строка, иначе индекс
+        histDraft:   '',           // недонабранное: ↑ его прячет, ↓ возвращает
         keyHandler:  null,
         lockHandler: null,         // глушилка клавиш после останова машины
         offEl:       null,
-        inputLocked: false         // shutdown: ввод мёртв до перезагрузки страницы
+        inputLocked: false,        // shutdown: ввод мёртв до перезагрузки страницы
+        busyDepth:   0,            // мьютекс ввода: 0 — shell слушает клавиатуру
+        charDelay:   0,            // ms на символ: без видеодрайвера печать ползёт
+        speedPenalty: 1,           // множитель тормоза ядра (авто-пак драйверов)
+        holdHandler: null,         // диалог драйвера: следующая строка идёт ему
+        crawl:       null,         // хвост очереди медленного вывода
+        panic:       false         // паника: экран замер, клавиши мертвы
     };
 
     /* --- 4. Мелкие хелперы ------------------------------------------------ */
@@ -192,6 +230,34 @@
         var node = layer(id);
 
         if (node) { node.style.display = 'none'; }
+    }
+
+    /* --- 4a. Флаги ACPI: их держит менеджер драйверов ---------------------- */
+    /* Без драйвера ACPI питанием рулить нечем: S5 недостижим и линия сброса
+     * (FADT reset register) уходит вместе с ним — читают shutdown и reboot. */
+    function acpiFlags() {
+        var flags = window.SurgeonACPI;
+        var live;
+
+        /* Менеджера драйверов рядом нет вовсе (сборка без этапа 4): питание у
+         * машины никто не отбирал, она живёт как до драйверов — сброс идёт по
+         * старинке, с линии 8042. Флаги ядру больше спросить не у кого. */
+        if (!flags) {
+            return {
+                installed:   true,
+                power_state: 'S0',
+                reset:       'legacy 8042 reset line',
+                manager:     null
+            };
+        }
+
+        live = flags.installed === true;
+
+        return {
+            installed:   live,
+            power_state: flags.power_state || 'S0',
+            reset:       live ? 'ACPI FADT reset register' : 'legacy 8042 reset line'
+        };
     }
 
     /* Клавиши перехватываем, только пока консоль видима. */
@@ -392,7 +458,8 @@
         var snap = ensurePlatform();
         var base = (snap.sataMode === 'IDE') ? TICK_IDE : TICK_AHCI;
 
-        return Math.max(TICK_MIN, Math.round((base * logScale) / snap.speed));
+        return Math.max(TICK_MIN,
+            Math.round((base * logScale * state.speedPenalty) / snap.speed));
     }
 
     /* --- 5a. Диск и виртуальный /sys/boot.config --------------------------- */
@@ -442,7 +509,7 @@
     var RAM_TOTAL_MB = 4096;
 
     var LOG_SCRIPT = [
-        '[ INFO ] Surgeon Kernel PA 0.3 (x86_64) — TPABKA Engine Core v7',
+        '[ INFO ] Surgeon Kernel alpha 0.1 (x86_64) — TPABKA Engine Core v7',
         '[ OK ] Boot protocol: Multiboot2, loader = Surgeon Boot Manager (GRUB 2.06)',
         '[ OK ] cmdline: core_mode=%MODE% quiet=0 nomodeset=0 tpabka_core=v7',
         '[ OK ] Memory map: RAM %RAM% MB, 0x0000000000010000-0x000000000009FBFF usable',
@@ -731,6 +798,15 @@
 
     function appendLine(text, cls) {
         var node;
+        var slow;
+
+        /* Этап 4: менеджер драйверов просит медленный вывод — строка ползёт
+         * по буквам, а приглашение ждёт её через drainOutput(). */
+        if (state.charDelay > 0 && state.phase === 'shell') {
+            slow = slowOutput(text, cls);
+            queueOutput(slow.done);
+            return slow.node;
+        }
 
         if (!state.logEl) { return null; }
 
@@ -746,6 +822,137 @@
         var i;
 
         for (i = 0; i < lines.length; i++) { appendLine(lines[i]); }
+    }
+
+    /* --- 7c. Медленный вывод: штраф «нет видеодрайвера» -------------------- */
+    /* Потолок на строку нужен обязательно: иначе одна таблица держит консоль
+     * минутами, оператор решает, что ядро повесилось, и жмёт F5 — вместо того
+     * чтобы поставить драйвер и снять штраф. */
+    function lagStep() {
+        if (state.charDelay <= 0) { return 0; }
+        return Math.round(state.charDelay * state.speedPenalty);
+    }
+
+    function crawlLine(node, text, step) {
+        return new Promise(function (resolve) {
+            var index   = 0;
+            var started = Date.now();
+
+            function frame() {
+                if (!node.parentNode) { resolve(false); return; }   // экран уже чистили
+                if (index >= text.length) { resolve(true); return; }
+
+                if (Date.now() - started >= OUTPUT_LINE_CAP) {
+                    node.textContent = text;                        // догнали в один кадр
+                    resolve(true);
+                    return;
+                }
+
+                node.textContent += text.charAt(index);
+                index += 1;
+                scrollToBottom();
+                window.setTimeout(frame, step);
+            }
+
+            frame();
+        });
+    }
+
+    /* Строка в ленте: либо мгновенно, либо по буквам — зависит от штрафа. */
+    function slowOutput(text, cls) {
+        var node = printLine('', cls);
+        var step = lagStep();
+
+        if (!node) { return null; }
+        if (step <= 0) {
+            node.textContent = text;
+            return { node: node, done: Promise.resolve(true) };
+        }
+        return { node: node, done: crawlLine(node, text, step) };
+    }
+
+    function queueOutput(promise) {
+        var chain = (state.crawl || Promise.resolve(true)).then(function () {
+            return promise;
+        });
+
+        state.crawl = chain.catch(function () { return false; });
+        return state.crawl;
+    }
+
+    function drainOutput() {
+        return queueOutput(true);
+    }
+
+    /* --- 7d. Мьютекс ввода: пока идёт печать, клавиши мертвы --------------- */
+    /* Раньше вывод и клавиатура жили параллельно: набранное посреди чужого лога
+     * копилось в строке, а Enter запускал новую команду поверх незакрытой. Здесь
+     * одна точка правды — busyDepth. Пока он больше нуля, onKeyDown отбрасывает
+     * клавиши целиком, каретка спрятана классом .is-busy, а флаг
+     * window.SurgeonCore.isInputLocked отвечает «ввод закрыт» наружу.
+     *
+     * Счётчик, а не флаг: мастер драйвера задаёт вопрос внутри чужой команды.
+     * Пока стоит holdHandler, ввод как раз нужен — это ответ на вопрос, поэтому
+     * inputBlocked() снимает блокировку ровно на время диалога. */
+    function inputBlocked() {
+        if (state.inputLocked) { return true; }        // shutdown/паника: ввод мёртв
+        return state.busyDepth > 0 && !state.holdHandler;
+    }
+
+    /* Единственное место, где меняются флаг и класс: они всегда синхронны. */
+    function publishLock() {
+        var api    = window.SurgeonCore;
+        var locked = inputBlocked();
+        var node   = state.container || layer(TERMINAL_ID);
+
+        if (api) { api.isInputLocked = locked; }
+        if (node && node.classList) {
+            if (locked) { node.classList.add('is-busy'); }
+            else        { node.classList.remove('is-busy'); }
+        }
+        return locked;
+    }
+
+    function beginBusy() {
+        state.busyDepth += 1;
+        if (state.busyDepth === 1) {
+            state.input = '';         // набранное «в дорогу» до приглашения не доживает
+        }
+        publishLock();
+        return state.busyDepth;
+    }
+
+    function endBusy() {
+        if (state.busyDepth > 0) { state.busyDepth -= 1; }
+        publishLock();
+        return state.busyDepth;
+    }
+
+    /* Аварийный сброс: reboot, shutdown и паника распускают мьютекс начисто. */
+    function clearBusy() {
+        state.busyDepth = 0;
+        historyReset();                 // листание истории кончается вместе с вводом
+        publishLock();
+        return false;
+    }
+
+    /* Мгновенная строка: паника и прогресс-бар не ждут штрафа. */
+    function printLine(text, cls) {
+        var node;
+
+        if (!state.logEl) { return null; }
+
+        node = el('div', 'kernel-line' + (cls ? ' ' + cls : ''), text);
+        state.logEl.appendChild(node);
+        state.bufferLines++;
+        state.printed++;
+        scrollToBottom();
+        return node;
+    }
+
+    /* Тормоз ядра: GENERIC-драйверы отбирают у команд 38% времени. */
+    function commandPenalty() {
+        return Math.round(COMMAND_PENALTY * (state.speedPenalty - 1));
     }
 
     /* Новая строка уводит экран вниз: scrollTop = scrollHeight. */
@@ -789,10 +996,13 @@
         state.printed = 0;
         state.flushed = 0;
         state.input   = '';
+        historyReset();                 // строка стёрта — листание кончилось
     }
 
-    /* --- 7a. Приглашение: живая строка потока, каретка в её конце ---------- */
-    /* Живёт до Enter: потом застывает в истории, и ниже рождается следующая. */
+    /* --- 7a. Приглашение: живая строка потока, без каретки ------------------ */
+    /* Живёт до Enter: потом застывает в истории, и ниже рождается следующая.
+     * Курсора здесь нет — ни каретки, ни мигающего блока: живая строка видна
+     * по приглашению и набранному тексту. */
     function printPrompt() {
         var row;
 
@@ -804,30 +1014,20 @@
         row.appendChild(el('span', 'kernel-prompt', PROMPT));
         state.inputEl = el('span', 'kernel-input-text');
         row.appendChild(state.inputEl);
-        row.appendChild(el('span', 'kernel-caret', CARET));
 
         state.logEl.appendChild(row);
         state.bufferLines++;
         state.inputRow = row;
         renderInput();
         scrollToBottom();
-
-        if (state.shakeNext) {          // срыв каретки переехал на новую строку
-            state.shakeNext = false;
-            shakePrompt();
-        }
         return row;
     }
 
-    /* Enter: набранный текст фиксируется как статичный лог, каретка снимается. */
+    /* Enter: набранный текст фиксируется как статичный лог, строка застывает. */
     function freezePrompt() {
         var row = state.inputRow;
-        var caret;
 
         if (!row) { return appendEcho(state.input); }
-
-        caret = row.querySelector('.kernel-caret');
-        if (caret && caret.parentNode) { caret.parentNode.removeChild(caret); }
 
         row.className  = 'kernel-line kernel-echo';
         state.inputRow = null;
@@ -874,23 +1074,67 @@
         renderInput();
     }
 
-    /* Недопустимая команда: каретка коротко мигает срывом. */
-    function shakePrompt() {
-        var caret = state.inputRow ? state.inputRow.querySelector('.kernel-caret') : null;
+    /* --- 7c. История команд: ↑ и ↓ листают прошлые строки ------------------ */
+    /* Как в Linux и в Windows: стрелка вверх достаёт прошлую команду, стрелка
+     * вниз возвращает к новой строке. Недонабранное не теряется: его прячет
+     * state.histDraft, а первая же стрелка вниз возвращает его обратно. Повторы
+     * подряд не копятся (ignoredups), память ограничена HISTORY_MAX. */
+    function historyReset() {
+        state.histIndex = null;
+        state.histDraft = '';
+        return true;
+    }
 
-        if (!caret) {
-            state.shakeNext = true;      // строка уже застыла: мигнём следующей
-            return;
+    /* Строку в живую строку кладём как есть: черновик не должен терять пробелы. */
+    function showLine(text) {
+        state.input = String(text);
+        renderInput();
+        return state.input;
+    }
+
+    /* Enter: команда уходит в память shell. Пустые строки память не засоряют. */
+    function rememberCommand(text) {
+        var last;
+
+        if (!text.length) { return false; }
+
+        last = state.history.length - 1;
+        if (last < 0 || state.history[last] !== text) { state.history.push(text); }
+        while (state.history.length > HISTORY_MAX) { state.history.shift(); }
+
+        historyReset();
+        return true;
+    }
+
+    /* Шаг: -1 — вверх (старше), +1 — вниз (новее). Возвращает то, что встало в
+     * живую строку, или null, если истории нет вовсе. */
+    function recallHistory(step) {
+        var total = state.history.length;
+
+        if (!total) { return null; }               // истории нет — стрелка молчит
+
+        if (state.histIndex === null) {
+            if (step > 0) { return null; }         // ниже новой строки идти некуда
+            state.histDraft = state.input;         // недонабранное прячем
+            state.histIndex = total - 1;
+        } else {
+            state.histIndex += step;
+
+            if (state.histIndex < 0) {
+                state.histIndex = 0;               // старше самой старой — стоп
+            } else if (state.histIndex >= total) {
+                state.histIndex = null;            // ниже новой — вернуть черновик
+                showLine(state.histDraft);
+                state.histDraft = '';
+                return state.input;
+            }
         }
 
-        caret.style.animation = 'none';
-        caret.style.opacity   = '0';
-
-        window.setTimeout(function () {
-            caret.style.opacity   = '';
-            caret.style.animation = '';
-        }, 80);
+        return showLine(state.history[state.histIndex]);
     }
+
+    function historyList() { return state.history.slice(0); }
+
     /* --- 8. Планшет строк водопада ----------------------------------------- */
     /* Пустые вставки отсеиваем, чтобы не ломать ритм. */
     function validLines(list) {
@@ -1061,6 +1305,7 @@
 
         platform = null;                       // свежий снимок NVRAM на прогон
         stopInput();
+        clearBusy();                           // прогон с нуля: ввод закрыт до shell
 
         plan = bootPlan(state.config);
         logScale = (plan.slowLog ? 1.5 : 1) / (plan.speed || 1);
@@ -1097,7 +1342,13 @@
         state.phase   = 'idle';
 
         state.inputLocked = false;
-        state.shakeNext   = false;
+        clearBusy();                       // мьютекс ввода распущен: страница с нуля
+        state.holdHandler = null;          // недоигранный мастер чужого прогона
+        state.history     = [];            // новый shell — новая история
+        state.histIndex   = null;
+        state.histDraft   = '';
+        state.crawl       = null;
+        state.panic       = false;
         state.mceLines    = [];
 
         stopInput();
@@ -1210,7 +1461,9 @@
 
         state.input       = '';
         state.inputLocked = false;
+        historyReset();                    // новая строка — новая точка отсчёта
         printPrompt();
+        publishLock();                     // ввод закрыт, пока мьютекс не отпустят
 
         state.keyHandler = function (event) { onKeyDown(event, token); };
         document.addEventListener('keydown', state.keyHandler, true);
@@ -1224,10 +1477,16 @@
         }
     }
 
-    /* Enter, Backspace, печатаемые символы и Ctrl+L (очистка, как в Linux).
-     * После останова машины клавиши не доходят даже сюда. */
+    /* Enter, Backspace, печатаемые символы, ↑/↓ (история команд, как в Linux) и
+     * Ctrl+L (очистка). Пока ядро печатает (мьютекс 7d), клавиша не делает
+     * НИЧЕГО: ни символа, ни Enter, ни стрелки, ни Ctrl+L. После останова машины
+     * клавиши не доходят даже сюда. */
     function onKeyDown(event, token) {
-        if (state.inputLocked) { return; }
+        if (inputBlocked()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
         if (isStale(token) || state.phase !== 'shell' || !consoleOnScreen()) { return; }
 
         if (event.ctrlKey && (event.key === 'l' || event.key === 'L')) {
@@ -1238,6 +1497,17 @@
         }
         if (event.ctrlKey || event.altKey || event.metaKey) { return; }
 
+        /* ↑ и ↓ листают прошлые команды — как в Windows или Linux (см. 7c). */
+        if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            recallHistory(-1);
+            return;
+        }
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            recallHistory(1);
+            return;
+        }
         if (event.key === 'Enter') {
             event.preventDefault();
             submit(state.input, token);
@@ -1252,6 +1522,7 @@
         if (event.key === 'Escape') {
             event.preventDefault();
             resetInput();
+            historyReset();              // строка брошена — листание кончилось
             return;
         }
         if (typeof event.key === 'string' && event.key.length === 1) {
@@ -1261,7 +1532,22 @@
         }
     }
 
-    /* Enter: строка уходит в историю, ниже — вывод и следующее приглашение. */
+    /* Этап 4: диалог драйвера перехватывает строку вместо команды shell. */
+    async function deliver(text, token) {
+        var holder = state.holdHandler;
+
+        if (holder) {
+            state.holdHandler = null;        // один вопрос — один ответ
+            publishLock();                   // ответ принят: печать снова глушит ввод
+            await holder(text, token);
+            return true;
+        }
+        return execute(text, token);
+    }
+
+    /* Enter: строка уходит в историю, ниже — вывод и следующее приглашение.
+     * Мьютекс ввода закрыт на всё время вывода и открывается только после того,
+     * как новое приглашение root@Surgeon_OS:~# уже стоит на экране. */
     async function submit(raw, token) {
         var text = trimText(raw);
 
@@ -1272,8 +1558,14 @@
             return;
         }
 
-        await execute(text, token);
-        ensurePrompt();
+        rememberCommand(text);               // строка — в память shell (см. 7c)
+        beginBusy();
+        try {
+            await deliver(text, token);
+        } finally {
+            ensurePrompt();                  // приглашение напечатано — ввод свободен
+            endBusy();
+        }
     }
 
     /* Публичный запуск команды: то же, что набрать её в консоли. */
@@ -1283,6 +1575,9 @@
 
         if (state.inputLocked || state.phase === 'off') { return false; }
         if (state.phase !== 'shell') { return false; }     // логи или сводка идут
+        /* Команда уже печатает: второй запуск поверх неё — та же грязь, что и
+         * Enter посреди вывода. Исключение одно — ответ мастеру драйвера. */
+        if (inputBlocked()) { return false; }
 
         if (state.inputRow) {
             setInput(clean);                 // текст встаёт в живую строку
@@ -1293,8 +1588,13 @@
 
         if (!clean.length) { ensurePrompt(); return false; }
 
-        ok = await execute(clean, state.token);
-        ensurePrompt();
+        beginBusy();
+        try {
+            ok = await deliver(clean, state.token);
+        } finally {
+            ensurePrompt();
+            endBusy();
+        }
         return ok;
     }
 
@@ -1344,14 +1644,16 @@
 
         if (!entry) {
             appendLine('bash: ' + parsed.name +
-                ': command not found in the Surgeon PA 0.3 kernel', 'is-err');
+                ': command not found in the Surgeon alpha 0.1 kernel', 'is-err');
             appendLine('Hint: help — the list of ' + COMMAND_ORDER.length +
                 ' kernel commands.', 'is-dim');
-            shakePrompt();
             return false;
         }
 
+        /* Этап 4: GENERIC-драйверы отбирают время у каждой команды. */
+        await sleep(commandPenalty());
         await entry.run(parsed.args, parsed.rawArgs, token);
+        await drainOutput();
         return true;
     }
     /* --- 11b. Команды ядра ------------------------------------------------ */
@@ -1383,7 +1685,7 @@
 
     /* uname — архитектура и версия ядра. */
     function cmdUname() {
-        appendLine('Surgeon Kernel v0.3-PA x86_64 Core');
+        appendLine('Surgeon Kernel v0.1-alpha x86_64 Core');
         appendLine('  build: ' + BUILD_STAMP, 'is-dim');
     }
 
@@ -1409,7 +1711,7 @@
         appendLine('cache size      : 32768 KB (TPABKA-Core L2)');
         appendLine('flags           : fpu vme de pse tsc msr pae mce cx8 apic sep tpabka');
         appendLine('thermal         : package ' + thermalTemperature() + 'C, Tjmax 105C');
-        appendLine('hypervisor      : Surgeon PA 0.3 Virtual Machine');
+        appendLine('hypervisor      : Surgeon alpha 0.1 Virtual Machine');
         appendLine('boot config     : ' + ((state.config && state.config.coreMode) || 'normal') +
             ', boot device ' + ((state.config && state.config.bootDevice) || 'vdfs:0'));
         appendLine('');
@@ -1500,11 +1802,11 @@
 
     /* version — развёрнутый манифест ядра. */
     function cmdVersion() {
-        appendLine('Surgeon Kernel Engine PA 0.3 (Subsystem: TPABKA-Core-v7)');
+        appendLine('Surgeon Kernel Engine alpha 0.1 (Subsystem: TPABKA-Core-v7)');
         appendLine('  build        : ' + BUILD_STAMP);
         appendLine('  arch         : x86_64, VDFS bridge, pww13 protected partitions');
         appendLine('  boot mode    : ' + ((state.config && state.config.coreMode) || 'normal'));
-        appendLine('  shell        : Surgeon Shell PA 0.3 — ' + COMMAND_ORDER.length +
+        appendLine('  shell        : Surgeon Shell alpha 0.1 — ' + COMMAND_ORDER.length +
             ' kernel commands');
         appendLine('  memory       : ' + RAM_TOTAL_MB + ' MB virtual, DDR4 ' +
             formatMHz(ensurePlatform().perf.memoryMHz));
@@ -1537,7 +1839,16 @@
     /* reboot — сброс машины: страница перезагружается, POST идёт заново.
      * SurgeonSimReboot = true глушит reload в дым-тесте (как в Click BIOS). */
     function cmdReboot() {
-        powerOff('[ OK ] reboot: VDFS synced, ACPI reset asserted...', function () {
+        /* Линия сброса — это ACPI: сняли драйвер, сбрасывать нечем. */
+        if (!acpiFlags().installed) {
+            appendLine('[ ERR ] reboot: no reset source — the ACPI reset register ' +
+                'went with the driver.', 'is-err');
+            appendLine('        hint: sudo install acpi, or power-cycle the machine.', 'is-dim');
+            return false;
+        }
+
+        powerOff('[ OK ] reboot: ' + acpiFlags().reset + ' asserted, VDFS synced...',
+            function () {
             document.dispatchEvent(new window.CustomEvent('surgeon_reboot'));
 
             if (window.SurgeonSimReboot === true) { return; }
@@ -1547,6 +1858,14 @@
 
     /* shutdown — питание снято (ACPI S5): монитор гаснет, ввод мёртв до F5. */
     function cmdShutdown() {
+        /* Нет драйвера ACPI — питание не снять: S5 держится на нём. */
+        if (!acpiFlags().installed) {
+            appendLine('[ ERR ] shutdown: ACPI power controller driver missing — ' +
+                'power state S5 is unreachable.', 'is-err');
+            appendLine('        hint: sudo install acpi', 'is-dim');
+            return false;
+        }
+
         powerOff('[ OK ] shutdown: ACPI S5 — file systems unmounted.', null);
     }
 
@@ -1558,6 +1877,7 @@
         state.phase       = 'off';
         state.running     = false;
         state.inputLocked = true;
+        clearBusy();                    // мьютекс больше не нужен: ввод мёртв навсегда
 
         if (message) { writeLine(message); }
 
@@ -1579,7 +1899,7 @@
             state.input    = '';
 
             if (halted) {
-                lockKeyboard();          // клавиатура мертва: только F5 или Ctrl+R
+                lockKeyboard();          // soft lock: F5 и Ctrl+R ещё живы
                 document.dispatchEvent(new window.CustomEvent('kernel_halted', {
                     detail: stats()
                 }));
@@ -1590,15 +1910,17 @@
         }, halted ? 240 : 700);
     }
 
-    /* Клавиатура мёртва: пропускаем только F5/Ctrl+R — «физический ребут». */
-    function lockKeyboard() {
+    /* Клавиатура мертва. Мягкий замок (штатный shutdown) пропускает F5 и Ctrl+R —
+     * это «физический ребут». Жёсткий (паника без ACPI) глушит всё: линии сброса
+     * у машины больше нет, выйти можно только питанием. */
+    function lockKeyboard(hard) {
         if (state.lockHandler) { return state.lockHandler; }
 
         state.lockHandler = function (event) {
             var reload = (event.key === 'F5') ||
                 (event.ctrlKey && (event.key === 'r' || event.key === 'R'));
 
-            if (reload) { return; }
+            if (reload && hard !== true) { return; }
 
             event.preventDefault();
             event.stopPropagation();
@@ -1648,8 +1970,15 @@
             flushMarker: FLUSH_MARKER,
             screenLines: state.logEl ? state.logEl.childNodes.length : 0,
             promptLines: document.querySelectorAll('.kernel-input-row').length,
-            inputLocked: state.inputLocked,
+            inputLocked: state.inputLocked,     // выключатель питания: флаг навсегда
+            busy:        state.busyDepth > 0,   // команда в работе: идёт печать
+            isInputLocked: inputBlocked(),      // клавиши сейчас не доходят вообще
             halted:     (state.phase === 'off' && state.inputLocked === true),
+            panic:      state.panic === true,
+            charDelay:  state.charDelay,
+            speedPenalty: state.speedPenalty,
+            holdInput:  !!state.holdHandler,
+            history:    state.history.length,   // прошлые строки живого shell
             uptime:     uptimeSeconds()
         };
     }
@@ -1670,6 +1999,102 @@
 
     function rings() {
         return window.SURGEON_CPU_RINGS;
+    }
+
+    /* --- 12a. Паника ядра: экран замирает, клавиши умирают ------------------ */
+    /* Менеджер драйверов зовёт halt() уже после того, как свалил дамп. Без ACPI
+     * линии сброса нет вообще: ядру нечем перезапустить машину, поэтому ввод
+     * умирает целиком — вместе с F5 и Ctrl+R. Остаётся только питание. */
+    function panicHalt() {
+        var dead = !acpiFlags().installed;
+
+        stopInput();
+
+        state.phase       = 'panic';
+        state.panic       = true;
+        state.running     = false;
+        state.inputLocked = true;
+        clearBusy();                       // экран замер: печатать больше некому
+        state.holdHandler = null;
+        state.inputRow    = null;
+        state.inputEl     = null;
+        state.input       = '';
+
+        lockKeyboard(dead);
+        document.dispatchEvent(new window.CustomEvent('kernel_panic', { detail: stats() }));
+        console.error('[KERNEL] KERNEL PANIC — input locked, ' +
+            (dead ? 'reset line is gone: power-cycle only' : 'only F5 reboots'));
+        return true;
+    }
+
+    /* --- 12b. Мост к менеджеру драйверов (этап 4) -------------------------- */
+    /* Команды драйверов встают в ту же таблицу, что и команды ядра: help,
+     * счётчики и диспетчер подхватывают их сами, список править не нужно. */
+    function registerCommand(name, desc, run) {
+        var table = commandTable();
+        var key   = trimText(name).toLowerCase();
+
+        if (!key || typeof run !== 'function') { return false; }
+        if (table[key]) { return false; }            // имя уже занято ядром
+
+        table[key] = { desc: desc || 'stage 4 driver command', run: run };
+        COMMAND_ORDER.push(key);
+        return true;
+    }
+
+    /* Строка драйвера печатается в общем темпе: со штрафом «нет видеодрайвера»
+     * она ползёт по буквам так же, как вывод команд. */
+    function emit(text, cls) {
+        var slow = slowOutput(text, cls);
+
+        if (!slow) { return Promise.resolve(false); }
+        return queueOutput(slow.done);
+    }
+
+    function emitAll(lines, cls) {
+        var list  = isArray(lines) ? lines : [lines];
+        var chain = drainOutput();
+        var i;
+
+        for (i = 0; i < list.length; i++) {
+            chain = chain.then(emitStep(list[i], cls));
+        }
+        return chain;
+    }
+
+    function emitStep(text, cls) {
+        return function () { return emit(text, cls); };
+    }
+
+    /* Менеджер задаёт штрафы и снимает их, как только драйвер встал. */
+    function setCharDelay(ms) {
+        var value = Number(ms);
+
+        state.charDelay = clamp(isFinite(value) ? value : 0, 0, 5000);
+        return state.charDelay;
+    }
+
+    /* 1 — нормально, 1.38 — GENERIC-драйверы съели 38% скорости ядра. */
+    function setSpeedPenalty(factor) {
+        var value = Number(factor);
+
+        if (!isFinite(value) || value < 1) { value = 1; }
+        state.speedPenalty = Math.min(value, 4);
+        return state.speedPenalty;
+    }
+
+    /* Диалог драйвера: следующая строка уходит ему, а не диспетчеру команд.
+     * Пока вопрос висит, мьютекс ввода открыт: человек набирает ответ. */
+    function holdInput(handler) {
+        state.holdHandler = (typeof handler === 'function') ? handler : null;
+        publishLock();
+        return !!state.holdHandler;
+    }
+
+    function releaseInput() {
+        state.holdHandler = null;
+        publishLock();
+        return true;
     }
 
     /* --- 13. Мост с бутлоадером и экспорт в глобальный контекст ------------ */
@@ -1719,7 +2144,11 @@
         clear:       resetScreen,
         powerOff:    powerOff,
         haltText:    HALT_TEXT,
-        caret:       CARET,
+        /* --- Курсор: каретки ядро не рисует вообще ------------------------- */
+        /* Каретки в консоли нет — ни узла .kernel-caret, ни блока: живая строка
+         * это приглашение и текст. Мигающий курсор остался только в BIOS, а
+         * мышиный указатель — дело system/mouse.js: он приходит с драйвером. */
+        hasCaret:    function () { return false; },
         flushCycles: function () { return state.flushCycles; },
         flushMarker: function () { return FLUSH_MARKER; },
         screenText:  function () { return state.logEl ? state.logEl.textContent : ''; },
@@ -1728,13 +2157,40 @@
             return document.querySelectorAll('.kernel-input-row').length;
         },
         inputLocked: function () { return state.inputLocked; },
+        /* --- История команд: её листают ↑ и ↓ (см. 7c) --------------------- */
+        history:      historyList,
+        historyCount: function () { return state.history.length; },
+        historyReset: historyReset,
+        /* --- Этап 4: мьютекс ввода (см. 7d) -------------------------------- */
+        isInputLocked: false,               // живой флаг: true, пока идёт печать
+        inputBlocked: inputBlocked,         // то же, но запросом
+        busy:         function () { return state.busyDepth > 0; },
+        busyDepth:    function () { return state.busyDepth; },
         booted:      function () { return state.booted; },
         phase:       function () { return state.phase; },
-        logScript:   LOG_SCRIPT
+        logScript:   LOG_SCRIPT,
+        /* --- Этап 4: то, чем пользуется менеджер драйверов ------------------ */
+        registerCommand: registerCommand,
+        emit:        emit,
+        emitAll:     emitAll,
+        printLine:   printLine,
+        drainOutput: drainOutput,
+        setCharDelay:    setCharDelay,
+        setSpeedPenalty: setSpeedPenalty,
+        holdInput:   holdInput,
+        releaseInput: releaseInput,
+        showPrompt:  ensurePrompt,
+        halt:        panicHalt,
+        acpi:        acpiFlags,
+        charDelay:    function () { return state.charDelay; },
+        speedPenalty: function () { return state.speedPenalty; },
+        holdActive:   function () { return !!state.holdHandler; },
+        panicked:     function () { return state.panic === true; }
     };
 
     /* Подписка ставится сразу: boot_complete может прийти раньше готовности. */
     wire();
+    publishLock();                 // мьютекс ввода виден снаружи уже на загрузке
 
     console.log('[CORE] os_core.js loaded: ' + PA_SEMVER + ' — ' + LOG_SCRIPT.length +
         ' waterfall lines, Ring 0 active');

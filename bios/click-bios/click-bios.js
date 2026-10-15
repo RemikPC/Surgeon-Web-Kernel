@@ -1,5 +1,5 @@
 /* ============================================================================
- * Surgeon Kernel PA 0.3    Файл: bios/click-bios/click-bios.js
+ * Surgeon Kernel alpha 0.1    Файл: bios/click-bios/click-bios.js
  * ----------------------------------------------------------------------------
  * Click BIOS 5: Setup как на живом железе — меню сверху, плотные списки опций
  * вида "Option [Value]", панель System Status и Item Help справа, строка
@@ -104,13 +104,23 @@
     var DEFAULT_USB    = { legacy_usb: true };
     var DEFAULT_SECURE = { secure_boot: false };
 
-    /* Артефакты перегрева — нарочно слабые: дрожит треть узлов, раз в тик по
-     * экрану проходят цветные полосы, как на умирающей плате. Селектор общий:
-     * движок трясёт и Setup, и экран POST, и меню GRUB. */
-    var GLITCH_TICK_MS  = 160;
-    var GLITCH_RATIO    = 0.34;
-    var GLITCH_BARS     = { min: 2, max: 5 };        // столько полос за тик
+    /* Артефакты перегрева — нарочно грубые: дрожит больше половины узлов, раз в
+     * тик по экрану проходят цветные полосы, а сам слой коротко ходит ходуном,
+     * как на умирающей плате. Селектор общий: движок трясёт и Setup, и экран
+     * POST, и меню GRUB. Размах не константа: он множится на severityScale(). */
+    var GLITCH_TICK_MS  = 120;
+    var GLITCH_RATIO    = 0.55;
+    var GLITCH_BARS     = { min: 4, max: 9 };        // столько полос за тик
     var GLITCH_COLORS   = ['#00ffff', '#ff00ff', '#ffff00', '#ff2d2d', '#00ff66', '#5f7cff'];
+
+    /* Размах тряски, который множится на severityScale(). Пиксели — на severity 3. */
+    var GLITCH_SHAKE_X   = 6;      // ±px сдвига узла по X
+    var GLITCH_SHAKE_Y   = 4;      // ±px сдвига узла по Y
+    var GLITCH_SKEW_MAX  = 5;      // ±deg скола узла
+    var GLITCH_ROOT_X    = 3;      // ±px хода всего слоя: экран «плывёт» целиком
+    var GLITCH_ROOT_Y    = 2;      // ±px хода слоя по вертикали
+    var GLITCH_HIDE_ODDS = 12;     // каждый двенадцатый трясущийся узел мигает
+    var GLITCH_BAR_H     = 7;      // высота полосы на severity 3, px
     var GLITCH_SELECTOR = '.bios-row, .bios-group-title, .oc-row, .uefi-title, ' +
         '.uefi-tab, .status-row, .boot-item, .uefi-logo, .uefi-metric, .exit-btn, .bios-row-note, ' +
         '.post-head-line, .post-head-art, .post-head-caption, .post-line, .post-splash-frame, ' +
@@ -126,7 +136,7 @@
     var KEY_ESC    = 27;
     var KEY_DELETE = 46;
     var DEL_PRESSES = 5;          // столько <Del> открывает Setup и с экрана отказа
-    var PA_VERSION = 'PA 0.3';
+    var PA_VERSION = 'alpha 0.1';
     var BIOS_VER   = '5.20';
     var BIOS_BUILD = '10/10/2026';
     var BIOS_REV   = '0101';
@@ -772,9 +782,9 @@
         return list[randomInt(0, list.length - 1)];
     }
 
-    /* Тяжесть перегрева: 1 — чуть дрожит, 3 — экран заметно колбасит. */
+    /* Тяжесть перегрева: 1 — дрожит заметно, 3 — экран ходит ходуном. */
     function severityScale() {
-        return 0.7 + (thermal.severity - 1) * 0.35;
+        return 0.9 + (thermal.severity - 1) * 0.55;
     }
 
     function rollbackShuffled() {
@@ -793,9 +803,13 @@
         thermal.barBox = null;
     }
 
-    /* Общий фильтр экрана: раз в восемь тиков гаснет целиком — это мерцание. */
+    /* Общий фильтр экрана: раз в восемь тиков гаснет целиком — это мерцание.
+     * ВАЖНО: filter знает только blur/contrast/saturate — skew() сюда ставить
+     * нельзя, браузер выбрасывает тогда всё объявление целиком. Скол живёт в
+     * transform слоя, см. shakeScreen(). */
     function paintOverheatFilter(root) {
         var scale = severityScale();
+        var sat;
 
         if (randomInt(0, 7) === 0) {
             root.style.filter     = 'none';
@@ -803,11 +817,22 @@
             return;
         }
 
+        sat = Math.max(0.3, 1 - randomRange(0.06, 0.38) * scale);
+
         root.style.filter =
-            'blur(' + (randomRange(0.15, 0.7) * scale).toFixed(2) + 'px)' +
-            ' contrast(' + (1 + randomRange(0.04, 0.22) * scale).toFixed(2) + ')' +
-            ' saturate(' + (1 - randomRange(0.02, 0.16) * scale).toFixed(2) + ')' +
-            ' skew(' + randomRange(-0.5, 0.5).toFixed(2) + 'deg)';
+            'blur(' + (randomRange(0.35, 1.6) * scale).toFixed(2) + 'px)' +
+            ' contrast(' + (1 + randomRange(0.1, 0.5) * scale).toFixed(2) + ')' +
+            ' saturate(' + sat.toFixed(2) + ')';
+    }
+
+    /* Короткий ход всего слоя: экран не только дрожит разметкой, но и «плывёт»
+     * целиком — так теряет синхронизацию настоящий VGA-тракт. */
+    function shakeScreen(root, scale) {
+        root.style.transform =
+            'translate(' + (randomRange(-GLITCH_ROOT_X, GLITCH_ROOT_X) * scale).toFixed(1) + 'px, ' +
+            (randomRange(-GLITCH_ROOT_Y, GLITCH_ROOT_Y) * scale).toFixed(1) + 'px) ' +
+            'rotate(' + (randomRange(-0.5, 0.5) * scale).toFixed(2) + 'deg) ' +
+            'skewX(' + (randomRange(-1.5, 1.5) * scale).toFixed(2) + 'deg)';
     }
 
     /* Разноцветные полосы в случайных местах экрана — главный признак сбоя. */
@@ -819,13 +844,13 @@
 
         for (i = 0; i < count; i++) {
             bar = el('div', 'glitch-bar');
-            bar.style.top        = randomRange(2, 96).toFixed(1) + '%';
+            bar.style.top        = randomRange(1, 97).toFixed(1) + '%';
             bar.style.left       = randomRange(0, 45).toFixed(1) + '%';
-            bar.style.width      = randomRange(12, 55).toFixed(1) + '%';
-            bar.style.height     = randomInt(1, Math.max(2, Math.round(4 * scale))) + 'px';
+            bar.style.width      = randomRange(10, 70).toFixed(1) + '%';
+            bar.style.height     = randomInt(1, Math.max(3, Math.round(GLITCH_BAR_H * scale))) + 'px';
             bar.style.background = randomFrom(GLITCH_COLORS);
-            bar.style.opacity    = (randomRange(0.12, 0.4) * scale).toFixed(2);
-            bar.style.transform  = 'skewX(' + randomRange(-12, 12).toFixed(1) + 'deg)';
+            bar.style.opacity    = Math.min(0.9, randomRange(0.2, 0.65) * scale).toFixed(2);
+            bar.style.transform  = 'skewX(' + randomRange(-24, 24).toFixed(1) + 'deg)';
             box.appendChild(bar);
         }
 
@@ -835,23 +860,27 @@
 
     function glitchTick() {
         var root  = thermal.rootEl;
+        var scale;
         var nodes, node, i;
 
         if (!thermal.active || !root || !root.parentNode) { return; }
 
+        scale = severityScale();
         rollbackShuffled();
         paintOverheatFilter(root);
+        shakeScreen(root, scale);
 
         nodes = root.querySelectorAll(GLITCH_SELECTOR);
         for (i = 0; i < nodes.length; i++) {
-            if (Math.random() > GLITCH_RATIO) { continue; }   // две трети узлов спокойны
+            if (Math.random() > GLITCH_RATIO) { continue; }   // часть узлов спокойна
 
             node = nodes[i];
-            node.style.transform = 'translate(' + randomRange(-3, 3).toFixed(1) + 'px, ' +
-                randomRange(-2, 2).toFixed(1) + 'px) skewX(' +
-                randomRange(-2.5, 2.5).toFixed(1) + 'deg)';
+            node.style.transform = 'translate(' +
+                (randomRange(-GLITCH_SHAKE_X, GLITCH_SHAKE_X) * scale).toFixed(1) + 'px, ' +
+                (randomRange(-GLITCH_SHAKE_Y, GLITCH_SHAKE_Y) * scale).toFixed(1) + 'px) skewX(' +
+                (randomRange(-GLITCH_SKEW_MAX, GLITCH_SKEW_MAX) * scale).toFixed(1) + 'deg)';
 
-            if (randomInt(0, 24) === 0) { node.style.visibility = 'hidden'; }
+            if (randomInt(0, GLITCH_HIDE_ODDS - 1) === 0) { node.style.visibility = 'hidden'; }
 
             thermal.shuffled.push(node);
         }
@@ -860,7 +889,8 @@
     }
 
     /* rootEl — корень слоя (Setup, экран POST, экран ошибки): его и трясёт.
-     * severity берётся из overheatState(): 1..3. */
+     * severity берётся из overheatState(): 1..3. Первый тик идёт сразу, чтобы
+     * экран дёрнулся, не дожидаясь интервала. */
     function startThermalArtifacts(rootEl, severity) {
         if (!rootEl) { return; }
 
@@ -893,6 +923,7 @@
         if (root) {
             root.style.filter     = '';
             root.style.textShadow = '';
+            root.style.transform  = '';      // ход слоя снимаем вместе с фильтром
             if (thermal.posSaved) { root.style.position = ''; }
             root.classList.remove('surgeon-overheat');
         }
