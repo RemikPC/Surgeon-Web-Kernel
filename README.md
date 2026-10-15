@@ -24,3 +24,7 @@ for SWB(Surgeon Web Kernel) pre-alpha 0.0.4
 16:37(Moscow) 11.10.2026
 hot-fix bios
 for SWB(Surgeon Web Kernel) pre-alpha 0.0.4.2
+
+16:30(Moscow) 15.10.2026
+drivers added
+for SWB(Surgeon Web Kernel) alpha 0.1
